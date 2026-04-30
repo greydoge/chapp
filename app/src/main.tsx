@@ -368,6 +368,7 @@ function TweetVideoMedia({
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [measuredSize, setMeasuredSize] = useState<{ width: number; height: number } | null>(null);
   const mediaUrl = useMemo(
     () =>
       buildTweetMediaProxyUrl(window.location.origin, {
@@ -376,13 +377,24 @@ function TweetVideoMedia({
       }),
     [item.posterUrl, item.streamUrl, item.url],
   );
+  const videoWidth = measuredSize?.width ?? item.width;
+  const videoHeight = measuredSize?.height ?? item.height;
+  const videoAspect = videoWidth && videoHeight ? videoWidth / videoHeight : null;
+  const portrait = videoAspect !== null && videoAspect < 1;
+  const videoStyle = videoAspect
+    ? ({
+        "--tweet-video-aspect": String(videoAspect),
+        "--tweet-video-ratio": `${videoWidth} / ${videoHeight}`,
+      } as React.CSSProperties)
+    : undefined;
 
   useEffect(() => {
     setLoaded(false);
+    setMeasuredSize(null);
   }, [item.posterUrl, item.streamUrl, item.url]);
 
   return (
-    <div className="tweetVideoWrap">
+    <div className={`tweetVideoWrap ${portrait ? "portrait" : ""}`} style={videoStyle}>
       <video
         ref={videoRef}
         className="tweetVideo"
@@ -394,7 +406,13 @@ function TweetVideoMedia({
         controls
         preload="metadata"
         poster={item.posterUrl ?? undefined}
-        onLoadedMetadata={() => setLoaded(true)}
+        onLoadedMetadata={(event) => {
+          const video = event.currentTarget;
+          if (video.videoWidth > 0 && video.videoHeight > 0) {
+            setMeasuredSize({ width: video.videoWidth, height: video.videoHeight });
+          }
+          setLoaded(true);
+        }}
         onLoadedData={() => setLoaded(true)}
         onCanPlay={() => setLoaded(true)}
         onError={() => setLoaded(false)}
@@ -1095,6 +1113,10 @@ function App() {
   const objectUrlsRef = useRef<Set<string>>(new Set());
   const lastReadSyncRef = useRef<Record<string, number>>({});
   const paneMessageCountRef = useRef<Record<string, number>>({});
+  const typingSyncRef = useRef<{ channelId: string | null; typing: boolean }>({ channelId: null, typing: false });
+  const draftRef = useRef(draft);
+  const activeChannelRef = useRef(activeChannel);
+  const draftSyncTimerRef = useRef<number | null>(null);
 
   const visibleMessages = useMemo(
     () =>
@@ -1130,6 +1152,31 @@ function App() {
     ],
     [recentEmojis],
   );
+
+  function resizeComposerTextarea(element: HTMLTextAreaElement) {
+    element.style.height = "auto";
+    const computed = window.getComputedStyle(element);
+    const lineHeight = Number.parseFloat(computed.lineHeight) || 20;
+    const padding = Number.parseFloat(computed.paddingTop) + Number.parseFloat(computed.paddingBottom);
+    const maxHeight = lineHeight * 5 + padding;
+    const nextHeight = Math.min(element.scrollHeight, maxHeight);
+    element.style.height = `${nextHeight}px`;
+    element.style.overflowY = element.scrollHeight > maxHeight ? "auto" : "hidden";
+  }
+
+  function syncMainDraftToState(channelId = activeChannelRef.current, value = draftRef.current) {
+    setDraftByChannel((current) => setChannelDraft(current, channelId, value));
+  }
+
+  function scheduleMainDraftSync(channelId = activeChannelRef.current, value = draftRef.current) {
+    if (draftSyncTimerRef.current !== null) {
+      window.clearTimeout(draftSyncTimerRef.current);
+    }
+    draftSyncTimerRef.current = window.setTimeout(() => {
+      draftSyncTimerRef.current = null;
+      syncMainDraftToState(channelId, value);
+    }, 250);
+  }
   const gifSearchTerm = gifQuery.trim().toLowerCase();
   const gifMatches = useMemo(
     () =>
@@ -1172,63 +1219,87 @@ function App() {
   }, [messages]);
 
   useEffect(() => {
-    const settings: StoredSettings = {
-      activeServer,
-      activeChannelsByServer,
-      channels,
-      xmppWebSocketUrl,
-      xmppJid,
-      xmppPassword,
-      xmppRoomJid,
-      xmppSpaceServiceJid,
-      xmppSpaceNode,
-      xmppNick,
-      editDraftByMessage,
-      newChannelName,
-      newServerName,
-      replyTargetByChannel,
-      activeVoiceRoom,
-      iceServersText,
-      draftByChannel,
-      searchQuery,
-      searchIndex,
-      roomPeerFingerprint,
-      recentEmojis,
-      gifFavorites,
-      avatarUrl,
-      avatarFrameUrl,
-      bannerUrl,
-      avatarAnimated,
-      chatPaneMode,
-      chatPaneChannels,
-      chatPaneDrafts,
-      chatPaneReplyTargets,
-      chatPaneCompactSections,
-      mainTab,
-      events,
-      membersOpen,
-      notificationsMuted,
-      name,
-      presence,
-      about,
-      pronouns,
-      pronunciation,
-      hobbies,
-      languages,
-      accentColor,
-      statusMessage,
-      website,
-      location,
-      headline,
-      timezone,
-      birthday,
-      company,
-      school,
-      major,
-      servers,
-      unreadByChannel,
+    activeChannelRef.current = activeChannel;
+  }, [activeChannel]);
+
+  useEffect(() => {
+    return () => {
+      if (draftSyncTimerRef.current !== null) {
+        window.clearTimeout(draftSyncTimerRef.current);
+      }
     };
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  }, []);
+
+  useEffect(() => {
+    draftRef.current = draft;
+    const element = composerInputRef.current;
+    if (element && document.activeElement !== element && element.value !== draft) {
+      element.value = draft;
+    }
+  }, [draft]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      const settings: StoredSettings = {
+        activeServer,
+        activeChannelsByServer,
+        channels,
+        xmppWebSocketUrl,
+        xmppJid,
+        xmppPassword,
+        xmppRoomJid,
+        xmppSpaceServiceJid,
+        xmppSpaceNode,
+        xmppNick,
+        editDraftByMessage,
+        newChannelName,
+        newServerName,
+        replyTargetByChannel,
+        activeVoiceRoom,
+        iceServersText,
+        draftByChannel,
+        searchQuery,
+        searchIndex,
+        roomPeerFingerprint,
+        recentEmojis,
+        gifFavorites,
+        avatarUrl,
+        avatarFrameUrl,
+        bannerUrl,
+        avatarAnimated,
+        chatPaneMode,
+        chatPaneChannels,
+        chatPaneDrafts,
+        chatPaneReplyTargets,
+        chatPaneCompactSections,
+        mainTab,
+        events,
+        membersOpen,
+        notificationsMuted,
+        name,
+        presence,
+        about,
+        pronouns,
+        pronunciation,
+        hobbies,
+        languages,
+        accentColor,
+        statusMessage,
+        website,
+        location,
+        headline,
+        timezone,
+        birthday,
+        company,
+        school,
+        major,
+        servers,
+        unreadByChannel,
+      };
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    }, 350);
+
+    return () => window.clearTimeout(timeout);
   }, [
     activeChannelsByServer,
     activeServer,
@@ -1545,17 +1616,54 @@ function App() {
   }, [chatPaneMode]);
 
   useEffect(() => {
+    let frame = 0;
+
+    const getMessageLists = () =>
+      [messageListRef.current, ...Object.values(paneMessageListRefs.current)].filter(
+        (element): element is HTMLDivElement => Boolean(element),
+      );
+
+    const updateEmbedVideoHeight = () => {
+      getMessageLists().forEach((element) => {
+        const height = element.clientHeight || element.getBoundingClientRect().height;
+        if (height <= 0) return;
+        element.style.setProperty("--embed-video-max-height", `${Math.round(height * 0.5)}px`);
+      });
+    };
+
+    const scheduleUpdate = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        updateEmbedVideoHeight();
+      });
+    };
+
+    scheduleUpdate();
+    window.addEventListener("resize", scheduleUpdate, { passive: true });
+
+    if (typeof ResizeObserver === "undefined") {
+      return () => {
+        if (frame) cancelAnimationFrame(frame);
+        window.removeEventListener("resize", scheduleUpdate);
+      };
+    }
+
+    const observer = new ResizeObserver(scheduleUpdate);
+    getMessageLists().forEach((element) => observer.observe(element));
+
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener("resize", scheduleUpdate);
+    };
+  }, [chatPaneChannels, chatPaneMode, mainTab]);
+
+  useEffect(() => {
     const element = composerInputRef.current;
     if (!element) return;
 
-    element.style.height = "auto";
-    const computed = window.getComputedStyle(element);
-    const lineHeight = Number.parseFloat(computed.lineHeight) || 20;
-    const padding = Number.parseFloat(computed.paddingTop) + Number.parseFloat(computed.paddingBottom);
-    const maxHeight = lineHeight * 5 + padding;
-    const nextHeight = Math.min(element.scrollHeight, maxHeight);
-    element.style.height = `${nextHeight}px`;
-    element.style.overflowY = element.scrollHeight > maxHeight ? "auto" : "hidden";
+    resizeComposerTextarea(element);
   }, [activeChannel, draft]);
 
   useEffect(() => {
@@ -1641,12 +1749,22 @@ function App() {
   }, [chatPaneChannels, chatPaneMode, messages]);
 
   useEffect(() => {
-    if (!connected) return;
+    if (!connected) {
+      typingSyncRef.current = { channelId: null, typing: false };
+      return;
+    }
+
     const active = focusedComposerDraft.trim().length > 0;
-    void sendTypingSync(active, focusedComposerChannel);
+    const previous = typingSyncRef.current;
+    if (previous.channelId !== focusedComposerChannel || previous.typing !== active) {
+      typingSyncRef.current = { channelId: focusedComposerChannel, typing: active };
+      void sendTypingSync(active, focusedComposerChannel);
+    }
+
     if (!active) return;
 
     const timeout = window.setTimeout(() => {
+      typingSyncRef.current = { channelId: focusedComposerChannel, typing: false };
       void sendTypingSync(false, focusedComposerChannel);
     }, 1200);
 
@@ -2095,7 +2213,16 @@ function App() {
   }
 
   function clearComposerDraft() {
-    if (!draft && !replyToMessage) return;
+    if (!draftRef.current && !replyToMessage) return;
+    if (draftSyncTimerRef.current !== null) {
+      window.clearTimeout(draftSyncTimerRef.current);
+      draftSyncTimerRef.current = null;
+    }
+    draftRef.current = "";
+    if (composerInputRef.current) {
+      composerInputRef.current.value = "";
+      composerInputRef.current.style.height = "auto";
+    }
     setDraftByChannel((current) => clearChannelDraft(current, activeChannel));
     setReplyTargetByChannel((current) => clearReplyTarget(current, activeChannel));
     void sendTypingSync(false);
@@ -4163,7 +4290,16 @@ function App() {
   }
 
   async function submitMessage() {
-    await submitMessageForChannel(activeChannel, draft, { includePendingGif: true, targetPaneIndex: null });
+    if (draftSyncTimerRef.current !== null) {
+      window.clearTimeout(draftSyncTimerRef.current);
+      draftSyncTimerRef.current = null;
+    }
+    await submitMessageForChannel(activeChannel, draftRef.current, { includePendingGif: true, targetPaneIndex: null });
+    draftRef.current = "";
+    if (composerInputRef.current) {
+      composerInputRef.current.value = "";
+      composerInputRef.current.style.height = "auto";
+    }
   }
 
   function insertComposerText(value: string) {
@@ -4171,7 +4307,9 @@ function App() {
     const targetPaneIndex = composerTargetPaneIndex;
     const currentDraft =
       targetPaneIndex === null
-        ? getChannelDraft(draftByChannel, targetChannel)
+        ? targetChannel === activeChannel
+          ? draftRef.current
+          : getChannelDraft(draftByChannel, targetChannel)
         : chatPaneDrafts[targetPaneIndex] ?? "";
     const input = targetPaneIndex === null ? composerInputRef.current : paneComposerInputRefs.current[`pane-${targetPaneIndex}`] ?? null;
     const start = input?.selectionStart ?? currentDraft.length;
@@ -4180,6 +4318,14 @@ function App() {
     const nextCursor = start + value.length;
 
     if (targetPaneIndex === null) {
+      if (draftSyncTimerRef.current !== null) {
+        window.clearTimeout(draftSyncTimerRef.current);
+        draftSyncTimerRef.current = null;
+      }
+      if (targetChannel === activeChannel && composerInputRef.current) {
+        draftRef.current = nextDraft;
+        composerInputRef.current.value = nextDraft;
+      }
       setDraftByChannel((current) => setChannelDraft(current, targetChannel, nextDraft));
     } else {
       setChatPaneDrafts((current) => current.map((draft, currentIndex) => (currentIndex === targetPaneIndex ? nextDraft : draft)));
@@ -5932,8 +6078,12 @@ function App() {
           )}
           <textarea
             ref={composerInputRef}
-            value={draft}
-            onChange={(event) => setDraftByChannel((current) => setChannelDraft(current, activeChannel, event.target.value))}
+            defaultValue={draft}
+            onChange={(event) => {
+              draftRef.current = event.target.value;
+              resizeComposerTextarea(event.currentTarget);
+              scheduleMainDraftSync(activeChannel, event.target.value);
+            }}
             onFocus={() => {
               setComposerTargetChannel(activeChannel);
               setComposerTargetPaneIndex(null);
@@ -6589,9 +6739,16 @@ function App() {
                     className="secondaryButton"
                     type="button"
                     onClick={() => {
-                      setDraftByChannel((current) =>
-                        setChannelDraft(current, activeChannel, `${draft}${draft ? " " : ""}@${selectedMember}`),
-                      );
+                      const nextDraft = `${draftRef.current}${draftRef.current ? " " : ""}@${selectedMember}`;
+                      if (draftSyncTimerRef.current !== null) {
+                        window.clearTimeout(draftSyncTimerRef.current);
+                        draftSyncTimerRef.current = null;
+                      }
+                      draftRef.current = nextDraft;
+                      if (composerInputRef.current) {
+                        composerInputRef.current.value = nextDraft;
+                      }
+                      setDraftByChannel((current) => setChannelDraft(current, activeChannel, nextDraft));
                       setModal(null);
                       setSelectedMember(null);
                       requestAnimationFrame(() => composerInputRef.current?.focus());

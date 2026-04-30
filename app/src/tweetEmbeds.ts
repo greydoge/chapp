@@ -15,6 +15,8 @@ export type TweetMedia =
       url: string;
       streamUrl?: string;
       posterUrl?: string;
+      width?: number;
+      height?: number;
     };
 
 export type TweetTextToken =
@@ -265,6 +267,8 @@ function buildMedia(tweet: FxTweet, tweetUrl: string): TweetMedia[] {
           url: videoUrl,
           streamUrl,
           posterUrl: item.thumbnail_url ?? buildDirectMediaUrl(tweetUrl, ".jpg"),
+          width: item.width,
+          height: item.height,
         });
       }
     }
