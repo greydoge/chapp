@@ -51,10 +51,6 @@ export type TweetPreview = {
   retweet?: TweetReply;
 };
 
-const PROXY_TARGETS = [
-  (target: string) => `https://corsproxy.io/?${encodeURIComponent(target)}`,
-  (target: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`,
-];
 const FETCH_TIMEOUT_MS = 2500;
 const previewCache = new Map<string, Promise<TweetPreview | null>>();
 const TWEET_MENTION_PATTERN = /(^|[\s([{<"'.,!?;:])([@#][A-Za-z0-9_]{1,30})/g;
@@ -312,21 +308,17 @@ export function buildTweetPreviewFromFxTweet(tweet: FxTweet, fallbackUrl: string
   };
 }
 
-async function fetchJsonThroughProxies(target: string) {
-  for (const buildUrl of PROXY_TARGETS) {
-    try {
-      const controller = new AbortController();
-      const timeout = globalThis.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-      const response = await fetch(buildUrl(target), { signal: controller.signal });
-      globalThis.clearTimeout(timeout);
-      if (!response.ok) continue;
-      return (await response.json()) as unknown;
-    } catch {
-      continue;
-    }
+async function fetchJsonThroughProxy(target: string) {
+  try {
+    const controller = new AbortController();
+    const timeout = globalThis.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const response = await fetch(`/tweet-preview?url=${encodeURIComponent(target)}`, { signal: controller.signal });
+    globalThis.clearTimeout(timeout);
+    if (!response.ok) return null;
+    return (await response.json()) as unknown;
+  } catch {
+    return null;
   }
-
-  return null;
 }
 
 export function buildFallbackTweetPreview(url: string): TweetPreview | null {
@@ -356,7 +348,7 @@ export async function fetchTweetPreview(url: string): Promise<TweetPreview | nul
     const apiUrl = handle
       ? `https://api.fxtwitter.com/${handle}/status/${tweetId}`
       : `https://api.fxtwitter.com/status/${tweetId}`;
-    const parsed = (await fetchJsonThroughProxies(apiUrl)) as FxTweetApiResponse | null;
+    const parsed = (await fetchJsonThroughProxy(apiUrl)) as FxTweetApiResponse | null;
     const tweet = parsed?.tweet;
     if (!tweet) return buildFallbackTweetPreview(url);
 

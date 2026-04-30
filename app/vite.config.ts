@@ -122,6 +122,37 @@ function tweetMediaProxyPlugin(): Plugin {
 
   const handler = async (req: any, res: any) => {
     const requestUrl = new URL(req.url ?? "/", "http://localhost");
+    if (requestUrl.pathname === "/tweet-preview") {
+      const target = requestUrl.searchParams.get("url");
+      if (!target) {
+        res.statusCode = 400;
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        res.end("Missing url parameter.");
+        return true;
+      }
+
+      try {
+        const response = await fetch(target, {
+          method: "GET",
+          redirect: "follow",
+          headers: {
+            "User-Agent": typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : "Mozilla/5.0",
+            Accept: "application/json",
+          },
+        });
+
+        const text = await response.text();
+        res.statusCode = response.status;
+        res.setHeader("Content-Type", response.headers.get("content-type") ?? "application/json; charset=utf-8");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.end(text);
+      } catch (error) {
+        res.statusCode = 502;
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        res.end(`Unable to load tweet preview: ${String(error)}`);
+      }
+      return true;
+    }
     if (requestUrl.pathname !== "/tweet-media") return false;
 
     const primary = requestUrl.searchParams.get("src");
@@ -149,8 +180,8 @@ function tweetMediaProxyPlugin(): Plugin {
         },
       });
 
-      const contentType = response.headers.get("content-type") ?? "";
-      const isPlayable = response.ok && (contentType.startsWith("video/") || contentType === "application/octet-stream");
+    const contentType = response.headers.get("content-type") ?? "";
+    const isPlayable = response.ok && (contentType.startsWith("video/") || contentType.startsWith("audio/") || contentType === "application/octet-stream");
       return { response, isPlayable };
     };
 
@@ -212,18 +243,25 @@ function tweetMediaProxyPlugin(): Plugin {
     }
 
     const contentType = response.headers.get("content-type") ?? "";
-    if (contentType.startsWith("video/")) {
-      if (contentType.startsWith("video/webm")) {
-        try {
-          await pipeline(Readable.fromWeb(response.body as any), res);
-        } catch (error) {
-          const code = error instanceof Error ? (error as { code?: string }).code : undefined;
-          if (code !== "ERR_STREAM_PREMATURE_CLOSE" && code !== "ECONNRESET") {
-            throw error;
-          }
+    const shouldPassthrough =
+      contentType.startsWith("video/mp4") ||
+      contentType.startsWith("video/webm") ||
+      contentType.startsWith("video/ogg") ||
+      contentType.startsWith("video/quicktime") ||
+      contentType.startsWith("audio/");
+    if (shouldPassthrough) {
+      try {
+        await pipeline(Readable.fromWeb(response.body as any), res);
+      } catch (error) {
+        const code = error instanceof Error ? (error as { code?: string }).code : undefined;
+        if (code !== "ERR_STREAM_PREMATURE_CLOSE" && code !== "ECONNRESET") {
+          throw error;
         }
-        return true;
       }
+      return true;
+    }
+
+    if (contentType.startsWith("video/")) {
 
       const cacheKey = target;
       const cached = mediaCache.get(cacheKey);

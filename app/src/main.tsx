@@ -379,44 +379,7 @@ function TweetVideoMedia({
 
   useEffect(() => {
     setLoaded(false);
-  }, [mediaUrl]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const syncLoadedState = () => {
-      const node = videoRef.current;
-      if (!node || cancelled) return;
-
-      if (node.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-        setLoaded(true);
-        return;
-      }
-
-      if (node.error) {
-        setLoaded(false);
-        return;
-      }
-
-      if (node.readyState === HTMLMediaElement.HAVE_NOTHING) {
-        node.load();
-      }
-
-      if (node.paused && node.readyState >= HTMLMediaElement.HAVE_METADATA) {
-        void node.play().catch(() => {
-          /* ignore autoplay rejection */
-        });
-      }
-
-      requestAnimationFrame(syncLoadedState);
-    };
-
-    syncLoadedState();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [mediaUrl]);
+  }, [item.posterUrl, item.streamUrl, item.url]);
 
   return (
     <div className="tweetVideoWrap">
@@ -429,14 +392,15 @@ function TweetVideoMedia({
         playsInline
         loop
         controls
-        preload="auto"
+        preload="metadata"
         poster={item.posterUrl ?? undefined}
-        src={mediaUrl}
         onLoadedMetadata={() => setLoaded(true)}
         onLoadedData={() => setLoaded(true)}
         onCanPlay={() => setLoaded(true)}
         onError={() => setLoaded(false)}
-      />
+      >
+        <source src={mediaUrl} type="video/mp4" />
+      </video>
       {!loaded && <div className="tweetVideoLoading">Loading video...</div>}
     </div>
   );
