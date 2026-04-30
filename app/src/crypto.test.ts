@@ -377,6 +377,7 @@ describe("crypto payload helpers", () => {
       callActive: true,
       screenSharing: false,
       micMuted: true,
+      cameraActive: false,
     };
 
     const key = await deriveKey("media secret");

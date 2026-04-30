@@ -24,9 +24,7 @@ describe("network helpers", () => {
     expect(() => parseIceServers('[{"username":"missing"}]')).toThrow("urls");
   });
 
-  it("migrates the legacy default STUN server to empty config", () => {
-    expect(migrateIceServersText(formatIceServers([{ urls: "stun:stun.l.google.com:19302" }]))).toBe(
-      formatIceServers(DEFAULT_ICE_SERVERS),
-    );
+  it("migrates empty ICE config to the STUN default", () => {
+    expect(migrateIceServersText("[]")).toBe(formatIceServers(DEFAULT_ICE_SERVERS));
   });
 });

@@ -37,7 +37,7 @@ export const DEFAULT_MESSAGES: PersistableMessage[] = [
   {
     id: "seed-1",
     author: "System",
-    body: "No account, no central message store. Create an invite, share it out-of-band, and peers connect directly.",
+    body: "Self-hosted rooms can federate through XMPP instead of browser-to-browser. Point the client at your own server and keep the policy local.",
     channel: "lobby",
     at: Date.now() - 1000 * 60 * 14,
     encrypted: true,
@@ -45,7 +45,7 @@ export const DEFAULT_MESSAGES: PersistableMessage[] = [
   {
     id: "seed-2",
     author: "System",
-    body: "Room traffic is encrypted with AES-GCM before it touches WebRTC. The passphrase never leaves this browser.",
+    body: "Room traffic is encrypted with AES-GCM before it leaves the client. XMPP servers can relay ciphertext without seeing the passphrase.",
     channel: "off-grid",
     at: Date.now() - 1000 * 60 * 8,
     encrypted: true,

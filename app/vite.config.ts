@@ -308,13 +308,23 @@ const httpsOptions = loadHttpsOptions();
 const useBasicSsl = isTruthyEnv(process.env.HTTPS ?? process.env.VITE_HTTPS) && !httpsOptions;
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      events: "events/",
+    },
+  },
+  optimizeDeps: {
+    include: ["events"],
+  },
   server: {
     host: "0.0.0.0",
     https: httpsOptions,
+    allowedHosts: ["doge-cube.local", "localhost", "127.0.0.1"],
   },
   preview: {
     host: "0.0.0.0",
     https: httpsOptions,
+    allowedHosts: ["doge-cube.local", "localhost", "127.0.0.1"],
   },
   plugins: [tweetMediaProxyPlugin(), react(), ...(useBasicSsl ? [basicSsl()] : [])],
 });

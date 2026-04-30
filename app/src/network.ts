@@ -1,5 +1,4 @@
-export const DEFAULT_ICE_SERVERS: RTCIceServer[] = [];
-const LEGACY_DEFAULT_ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
+export const DEFAULT_ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 
 export function formatIceServers(servers: RTCIceServer[]) {
   return JSON.stringify(servers, null, 2);
@@ -10,8 +9,7 @@ export function migrateIceServersText(input: string | undefined) {
   try {
     const parsed = parseIceServers(input);
     const normalized = formatIceServers(parsed);
-    const legacy = formatIceServers(LEGACY_DEFAULT_ICE_SERVERS);
-    return normalized === legacy ? formatIceServers(DEFAULT_ICE_SERVERS) : normalized;
+    return normalized === "[]" ? formatIceServers(DEFAULT_ICE_SERVERS) : normalized;
   } catch {
     return formatIceServers(DEFAULT_ICE_SERVERS);
   }

@@ -1,0 +1,21 @@
+import { Buffer } from './buffer';
+import createHash, { Hash } from './crypto/createHash';
+import Hmac from './crypto/Hmac';
+import { Readable, Writable, Transform, PassThrough, Duplex } from './stream';
+export declare function randomBytes(size: number): Buffer;
+export declare function getHashes(): string[];
+export declare function createHmac(alg: string, key: string | Buffer): Hmac;
+export type Resolver = undefined;
+export declare function createResolver(): Resolver | undefined;
+declare const nativeFetch: typeof fetch;
+declare const nativeWS: {
+    new (url: string | URL, protocols?: string | string[]): WebSocket;
+    prototype: WebSocket;
+    readonly CONNECTING: 0;
+    readonly OPEN: 1;
+    readonly CLOSING: 2;
+    readonly CLOSED: 3;
+};
+declare const nativeRTCPeerConnection: RTCPeerConnection | undefined;
+export declare const name = "browser";
+export { Buffer, createHash, Hash, Hmac, nativeFetch as fetch, nativeRTCPeerConnection as RTCPeerConnection, nativeWS as WebSocket, Readable, Writable, Transform, Duplex, PassThrough };

@@ -1,5 +1,7 @@
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import * as XMPP from "stanza";
+import { NS_JSON_0 } from "stanza/Namespaces";
 import {
   Bell,
   Circle,
@@ -16,6 +18,8 @@ import {
   Radio,
   Reply,
   CheckCheck,
+  Video,
+  VideoOff,
   Search,
   SearchX,
   ChevronDown,
@@ -33,6 +37,7 @@ import {
   Volume2,
   Trash2,
   ExternalLink,
+  Columns3,
   X,
 } from "lucide-react";
 import {
@@ -742,7 +747,7 @@ const DEFAULT_CHANNELS = [
 ];
 const DEFAULT_SERVERS = ["Relayless", "Peer Lab", "E2E Ops"];
 const DEFAULT_NAME = "LocalUser";
-const DEFAULT_PRESENCE = "direct peer online";
+const DEFAULT_PRESENCE = "xmpp online";
 
 const voiceRooms = ["war room", "release desk", "pairing"];
 const baseMembers = ["You", "Ada", "Linus", "Grace", "Katherine"];
@@ -769,19 +774,42 @@ type StoredSettings = {
   activeChannelsByServer?: Record<string, string>;
   activeVoiceRoom?: string | null;
   channels?: typeof DEFAULT_CHANNELS;
+  xmppWebSocketUrl?: string;
+  xmppJid?: string;
+  xmppPassword?: string;
+  xmppRoomJid?: string;
+  xmppSpaceServiceJid?: string;
+  xmppSpaceNode?: string;
+  xmppNick?: string;
   iceServersText?: string;
   membersOpen?: boolean;
   notificationsMuted?: boolean;
   name?: string;
   presence?: string;
+  about?: string;
+  pronouns?: string;
+  pronunciation?: string;
+  hobbies?: string;
+  languages?: string;
+  accentColor?: string;
+  statusMessage?: string;
+  website?: string;
+  location?: string;
+  headline?: string;
+  timezone?: string;
+  birthday?: string;
+  company?: string;
+  school?: string;
+  major?: string;
   recentEmojis?: string[];
   newChannelName?: string;
   newServerName?: string;
   draftByChannel?: ChannelDrafts;
   editDraftByMessage?: MessageEditDrafts;
   replyTargetByChannel?: ReplyTargets;
-  signalInput?: string;
-  signalOutput?: string;
+  chatPaneDrafts?: string[];
+  chatPaneReplyTargets?: Array<string | null>;
+  chatPaneCompactSections?: boolean[];
   searchQuery?: string;
   searchIndex?: number;
   roomPeerFingerprint?: string;
@@ -789,7 +817,81 @@ type StoredSettings = {
   unreadByChannel?: Record<string, number>;
   gifFavorites?: string[];
   mainTab?: "chat" | "session";
+  events?: string[];
+  avatarUrl?: string;
+  avatarFrameUrl?: string;
+  bannerUrl?: string;
+  avatarAnimated?: boolean;
+  chatPaneMode?: "single" | "split";
+  chatPaneChannels?: string[];
 };
+
+type XmppConnectionSettings = {
+  websocketUrl: string;
+  jid: string;
+  password: string;
+  roomJid: string;
+  spaceServiceJid: string;
+  spaceNode: string;
+  nick: string;
+};
+
+const DEFAULT_CHAT_PANE_COUNT = 4;
+const MAX_CHAT_PANES = 8;
+
+function normalizeChatPaneChannels(
+  nextChannels: string[] | undefined,
+  paneCount: number,
+  availableChannelIds: string[],
+  fallbackChannelId: string,
+): string[] {
+  const normalized = (nextChannels ?? [])
+    .filter((channelId) => availableChannelIds.includes(channelId))
+    .slice(0, paneCount);
+
+  const used = new Set(normalized);
+  while (normalized.length < paneCount) {
+    const nextPreferred =
+      availableChannelIds.find((channelId) => !used.has(channelId)) ??
+      fallbackChannelId;
+    normalized.push(nextPreferred);
+    used.add(nextPreferred);
+  }
+  return normalized;
+}
+
+function normalizeChatPaneDrafts(nextDrafts: string[] | undefined, paneCount: number) {
+  const drafts = (nextDrafts ?? []).slice(0, paneCount);
+  while (drafts.length < paneCount) drafts.push("");
+  return drafts;
+}
+
+function normalizeChatPaneReplyTargets(nextTargets: Array<string | null> | undefined, paneCount: number) {
+  const targets = (nextTargets ?? []).slice(0, paneCount);
+  while (targets.length < paneCount) targets.push(null);
+  return targets;
+}
+
+function normalizeChatPaneCompactSections(nextSections: boolean[] | undefined, paneCount: number) {
+  const sections = (nextSections ?? []).slice(0, paneCount);
+  while (sections.length < paneCount) sections.push(false);
+  return sections;
+}
+
+function normalizeXmppConnectionSettings(
+  settings: Pick<XmppConnectionSettings, "websocketUrl" | "jid" | "password" | "roomJid" | "spaceServiceJid" | "spaceNode" | "nick">,
+  fallbackNick: string,
+): XmppConnectionSettings {
+  return {
+    websocketUrl: settings.websocketUrl.trim(),
+    jid: settings.jid.trim(),
+    password: settings.password.trim(),
+    roomJid: settings.roomJid.trim(),
+    spaceServiceJid: settings.spaceServiceJid.trim(),
+    spaceNode: settings.spaceNode.trim(),
+    nick: settings.nick.trim() || fallbackNick.trim() || DEFAULT_NAME,
+  };
+}
 
 const SETTINGS_KEY = "relayless.settings.v1";
 const MESSAGES_KEY = "relayless.messages.v1";
@@ -813,6 +915,28 @@ function App() {
   const [activeServer, setActiveServer] = useState(storedSettings.activeServer ?? storedSettings.servers?.[0] ?? DEFAULT_SERVERS[0]);
   const [newServerName, setNewServerName] = useState(storedSettings.newServerName ?? "");
   const [channels, setChannels] = useState(storedSettings.channels ?? DEFAULT_CHANNELS);
+  const [xmppWebSocketUrl, setXmppWebSocketUrl] = useState(storedSettings.xmppWebSocketUrl ?? "");
+  const [xmppJid, setXmppJid] = useState(storedSettings.xmppJid ?? "");
+  const [xmppPassword, setXmppPassword] = useState(storedSettings.xmppPassword ?? "");
+  const [xmppRoomJid, setXmppRoomJid] = useState(storedSettings.xmppRoomJid ?? "");
+  const [xmppSpaceServiceJid, setXmppSpaceServiceJid] = useState(storedSettings.xmppSpaceServiceJid ?? "");
+  const [xmppSpaceNode, setXmppSpaceNode] = useState(storedSettings.xmppSpaceNode ?? "");
+  const [xmppNick, setXmppNick] = useState(storedSettings.xmppNick ?? "");
+  const [xmppConnectionSettings, setXmppConnectionSettings] = useState<XmppConnectionSettings>(() =>
+    normalizeXmppConnectionSettings(
+      {
+        websocketUrl: storedSettings.xmppWebSocketUrl ?? "",
+        jid: storedSettings.xmppJid ?? "",
+        password: storedSettings.xmppPassword ?? "",
+        roomJid: storedSettings.xmppRoomJid ?? "",
+        spaceServiceJid: storedSettings.xmppSpaceServiceJid ?? "",
+        spaceNode: storedSettings.xmppSpaceNode ?? "",
+        nick: storedSettings.xmppNick ?? "",
+      },
+      storedSettings.name ?? DEFAULT_NAME,
+    ),
+  );
+  const [xmppInviteUri, setXmppInviteUri] = useState("");
   const [newChannelName, setNewChannelName] = useState(storedSettings.newChannelName ?? "");
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
   const [deletingChannelId, setDeletingChannelId] = useState<string | null>(null);
@@ -834,11 +958,35 @@ function App() {
   const [searchIndex, setSearchIndex] = useState(storedSettings.searchIndex ?? 0);
   const [name, setName] = useState(storedSettings.name ?? DEFAULT_NAME);
   const [passphrase, setPassphrase] = useState("correct horse battery staple");
-  const [signalInput, setSignalInput] = useState(storedSettings.signalInput ?? "");
-  const [signalOutput, setSignalOutput] = useState(storedSettings.signalOutput ?? "");
   const [mainTab, setMainTab] = useState<"chat" | "session">(storedSettings.mainTab ?? "chat");
+  const [chatPaneMode, setChatPaneMode] = useState<"single" | "split">(storedSettings.chatPaneMode ?? "single");
+  const [chatPaneChannels, setChatPaneChannels] = useState<string[]>(() =>
+    normalizeChatPaneChannels(
+      storedSettings.chatPaneChannels,
+      DEFAULT_CHAT_PANE_COUNT,
+      (storedSettings.channels ?? DEFAULT_CHANNELS).map((channel) => channel.id),
+      storedSettings.channels?.[0]?.id ?? DEFAULT_CHANNELS[0].id,
+    ),
+  );
+  const [chatPaneDrafts, setChatPaneDrafts] = useState<string[]>(() =>
+    normalizeChatPaneDrafts(storedSettings.chatPaneDrafts, DEFAULT_CHAT_PANE_COUNT),
+  );
+  const [chatPaneReplyTargets, setChatPaneReplyTargets] = useState<Array<string | null>>(() =>
+    normalizeChatPaneReplyTargets(storedSettings.chatPaneReplyTargets, DEFAULT_CHAT_PANE_COUNT),
+  );
+  const [chatPaneCompactSections, setChatPaneCompactSections] = useState<boolean[]>(() =>
+    normalizeChatPaneCompactSections(storedSettings.chatPaneCompactSections, DEFAULT_CHAT_PANE_COUNT),
+  );
+  const [splitViewportCompact, setSplitViewportCompact] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth < 1200 : false,
+  );
+  const [splitViewportStacked, setSplitViewportStacked] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth < 820 : false,
+  );
   const [status, setStatus] = useState<PeerStatus>("idle");
-  const [events, setEvents] = useState<string[]>(["Ready for peer discovery."]);
+  const [events, setEvents] = useState<string[]>(
+    storedSettings.events?.length ? storedSettings.events.slice(0, 200) : ["Ready for XMPP federation."],
+  );
   const [keyFingerprint, setKeyFingerprint] = useState("calculating...");
   const [cryptoStatus, setCryptoStatus] = useState<"checking" | "available" | "unavailable">("checking");
   const [historyUnlocked, setHistoryUnlocked] = useState(false);
@@ -849,6 +997,10 @@ function App() {
   const [gifQuery, setGifQuery] = useState("");
   const [gifTab, setGifTab] = useState<"all" | "favorites">("all");
   const [pendingGif, setPendingGif] = useState<{ url: string; label: string; source: string } | null>(null);
+  const [pendingGifChannel, setPendingGifChannel] = useState<string>(activeChannel);
+  const [pendingGifPaneIndex, setPendingGifPaneIndex] = useState<number | null>(null);
+  const [composerTargetChannel, setComposerTargetChannel] = useState<string>(activeChannel);
+  const [composerTargetPaneIndex, setComposerTargetPaneIndex] = useState<number | null>(null);
   const [reactionPickerMessageId, setReactionPickerMessageId] = useState<string | null>(null);
   const [messageMenuMessageId, setMessageMenuMessageId] = useState<string | null>(null);
   const [messageMenuAnchor, setMessageMenuAnchor] = useState<{ top: number; left: number } | null>(null);
@@ -859,6 +1011,8 @@ function App() {
     size: number;
     dataUrl: string;
   } | null>(null);
+  const [pendingAttachmentChannel, setPendingAttachmentChannel] = useState<string>(activeChannel);
+  const [pendingAttachmentPaneIndex, setPendingAttachmentPaneIndex] = useState<number | null>(null);
   const [notificationsMuted, setNotificationsMuted] = useState(storedSettings.notificationsMuted ?? false);
   const [membersOpen, setMembersOpen] = useState(storedSettings.membersOpen ?? true);
   const [callActive, setCallActive] = useState(false);
@@ -867,18 +1021,61 @@ function App() {
   const [peerCallActive, setPeerCallActive] = useState(false);
   const [peerScreenSharing, setPeerScreenSharing] = useState(false);
   const [peerMicMuted, setPeerMicMuted] = useState(false);
+  const [peerCameraActive, setPeerCameraActive] = useState(false);
   const [activeVoiceRoom, setActiveVoiceRoom] = useState<string | null>(storedSettings.activeVoiceRoom ?? null);
   const [presence, setPresence] = useState(storedSettings.presence ?? DEFAULT_PRESENCE);
+  const [about, setAbout] = useState(storedSettings.about ?? "");
+  const [pronouns, setPronouns] = useState(storedSettings.pronouns ?? "");
+  const [pronunciation, setPronunciation] = useState(storedSettings.pronunciation ?? "");
+  const [hobbies, setHobbies] = useState(storedSettings.hobbies ?? "");
+  const [languages, setLanguages] = useState(storedSettings.languages ?? "");
+  const [accentColor, setAccentColor] = useState(storedSettings.accentColor ?? "#7c8cff");
+  const [statusMessage, setStatusMessage] = useState(storedSettings.statusMessage ?? "");
+  const [website, setWebsite] = useState(storedSettings.website ?? "");
+  const [location, setLocation] = useState(storedSettings.location ?? "");
+  const [headline, setHeadline] = useState(storedSettings.headline ?? "");
+  const [timezone, setTimezone] = useState(storedSettings.timezone ?? "");
+  const [birthday, setBirthday] = useState(storedSettings.birthday ?? "");
+  const [company, setCompany] = useState(storedSettings.company ?? "");
+  const [school, setSchool] = useState(storedSettings.school ?? "");
+  const [major, setMajor] = useState(storedSettings.major ?? "");
+  const [avatarUrl, setAvatarUrl] = useState(storedSettings.avatarUrl ?? "");
+  const [avatarFrameUrl, setAvatarFrameUrl] = useState(storedSettings.avatarFrameUrl ?? "");
+  const [bannerUrl, setBannerUrl] = useState(storedSettings.bannerUrl ?? "");
+  const [avatarAnimated, setAvatarAnimated] = useState(storedSettings.avatarAnimated ?? false);
   const [peerName, setPeerName] = useState("Peer");
   const [peerPresence, setPeerPresence] = useState("waiting for profile");
+  const [peerAbout, setPeerAbout] = useState("");
+  const [peerPronouns, setPeerPronouns] = useState("");
+  const [peerPronunciation, setPeerPronunciation] = useState("");
+  const [peerHobbies, setPeerHobbies] = useState("");
+  const [peerLanguages, setPeerLanguages] = useState("");
+  const [peerCompany, setPeerCompany] = useState("");
+  const [peerAccentColor, setPeerAccentColor] = useState("#7c8cff");
+  const [peerStatusMessage, setPeerStatusMessage] = useState("");
+  const [peerWebsite, setPeerWebsite] = useState("");
+  const [peerLocation, setPeerLocation] = useState("");
+  const [peerHeadline, setPeerHeadline] = useState("");
+  const [peerTimezone, setPeerTimezone] = useState("");
+  const [peerBirthday, setPeerBirthday] = useState("");
+  const [peerSchool, setPeerSchool] = useState("");
+  const [peerMajor, setPeerMajor] = useState("");
+  const [peerAvatarUrl, setPeerAvatarUrl] = useState("");
+  const [peerAvatarFrameUrl, setPeerAvatarFrameUrl] = useState("");
+  const [peerBannerUrl, setPeerBannerUrl] = useState("");
+  const [peerAvatarAnimated, setPeerAvatarAnimated] = useState(false);
   const [peerNotificationsMuted, setPeerNotificationsMuted] = useState(false);
   const [peerMembersOpen, setPeerMembersOpen] = useState(true);
   const [peerActiveServer, setPeerActiveServer] = useState("unknown");
   const [peerActiveChannel, setPeerActiveChannel] = useState("unknown");
   const [peerTypingChannel, setPeerTypingChannel] = useState<string | null>(null);
   const [iceServersText, setIceServersText] = useState(storedSettings.iceServersText ?? formatIceServers(DEFAULT_ICE_SERVERS));
+  const [xmppStatus, setXmppStatus] = useState("disconnected");
+  const prevXmppStatusRef = useRef(xmppStatus);
   const [remoteMediaActive, setRemoteMediaActive] = useState(false);
   const [remoteVideoActive, setRemoteVideoActive] = useState(false);
+  const [localAudioLevel, setLocalAudioLevel] = useState(0);
+  const [peerAudioLevel, setPeerAudioLevel] = useState(0);
   const [followLatest, setFollowLatest] = useState(true);
   const [roomFingerprint, setRoomFingerprint] = useState("");
   const [roomPeerFingerprint, setRoomPeerFingerprint] = useState(storedSettings.roomPeerFingerprint ?? "");
@@ -886,16 +1083,25 @@ function App() {
   const [unreadByChannel, setUnreadByChannel] = useState<UnreadCounts>(storedSettings.unreadByChannel ?? {});
   const [recentEmojis, setRecentEmojis] = useState<string[]>(storedSettings.recentEmojis ?? defaultRecentEmojis);
   const [gifFavorites, setGifFavorites] = useState<string[]>(storedSettings.gifFavorites ?? []);
+  const [cameraActive, setCameraActive] = useState(false);
   const memberRoster = useMemo(() => {
     if (!peerName.trim() || baseMembers.includes(peerName)) return baseMembers;
     return [baseMembers[0], peerName, ...baseMembers.slice(1)];
   }, [peerName]);
   const draft = getChannelDraft(draftByChannel, activeChannel);
   const replyToMessageId = getReplyTarget(replyTargetByChannel, activeChannel);
+  const focusedComposerChannel = composerTargetChannel || activeChannel;
+  const focusedComposerDraft = composerTargetPaneIndex === null ? draft : chatPaneDrafts[composerTargetPaneIndex] ?? "";
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const channelRef = useRef<RTCDataChannel | null>(null);
+  const xmppClientRef = useRef<XMPP.Agent | null>(null);
+  const xmppRoomRef = useRef<string | null>(null);
+  const xmppSpaceRef = useRef<{ serviceJid: string; node: string } | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const paneComposerInputRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+  const paneMessageListRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const paneMediaPreviewRefs = useRef<Record<string, HTMLVideoElement | null>>({});
   const emojiPickerRef = useRef<HTMLDivElement | null>(null);
   const gifPickerRef = useRef<HTMLDivElement | null>(null);
   const gifSearchRef = useRef<HTMLInputElement | null>(null);
@@ -903,16 +1109,28 @@ function App() {
   const messageMenuRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
+  const avatarUploadRef = useRef<HTMLInputElement | null>(null);
+  const bannerUploadRef = useRef<HTMLInputElement | null>(null);
+  const frameUploadRef = useRef<HTMLInputElement | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream>(new MediaStream());
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const localCameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const localScreenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const localAudioContextRef = useRef<AudioContext | null>(null);
+  const peerAudioContextRef = useRef<AudioContext | null>(null);
+  const localAudioFrameRef = useRef<number | null>(null);
+  const peerAudioFrameRef = useRef<number | null>(null);
   const renegotiatingRef = useRef(false);
   const attachmentTransfersRef = useRef<Map<string, AttachmentTransfer>>(new Map());
+  const processedWireIdsRef = useRef<Set<string>>(new Set());
+  const messagesRef = useRef<ChatMessage[]>(DEFAULT_MESSAGES);
   const objectUrlsRef = useRef<Set<string>>(new Set());
   const lastReadSyncRef = useRef<Record<string, number>>({});
+  const paneMessageCountRef = useRef<Record<string, number>>({});
 
   const visibleMessages = useMemo(
     () =>
@@ -929,7 +1147,7 @@ function App() {
         .sort((left, right) => Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)) || left.at - right.at),
     [activeChannel, messages, searchQuery],
   );
-  const connected = status === "connected";
+  const connected = xmppStatus === "connected";
   const searchActive = searchQuery.trim().length > 0;
 
   const activeLabel = useMemo(
@@ -976,24 +1194,31 @@ function App() {
     return columns;
   }, [visibleGifs]);
   const selectedSearchMessage = searchActive ? searchMatches[Math.min(searchIndex, Math.max(searchMatches.length - 1, 0))] ?? null : null;
-  const signalStatusText =
-    status === "hosting" && signalOutput
-      ? "Invite ready. Share this text with the other device."
-      : status === "joining" && signalOutput
-        ? "Answer ready. Send it back to the host."
-        : status === "connected"
-          ? "Peer connected."
-          : status === "closed"
-            ? "Peer channel closed."
-            : "Create an invite to start pairing.";
+  const chatInspectorMessage = selectedSearchMessage ?? visibleMessages[visibleMessages.length - 1] ?? null;
+  const chatInspectorPinnedCount = visibleMessages.filter((message) => message.pinned).length;
   const deletingChannel = channels.find((channel) => channel.id === deletingChannelId);
   const deleteFallbackChannel = channels.find((channel) => channel.id !== deletingChannelId) ?? channels[0];
+  const pendingAttachmentTargetLabel =
+    pendingAttachmentPaneIndex === null
+      ? `#${getChannelLabel(pendingAttachmentChannel || activeChannel)}`
+      : `Pane ${pendingAttachmentPaneIndex + 1} / #${getChannelLabel(pendingAttachmentChannel || activeChannel)}`;
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   useEffect(() => {
     const settings: StoredSettings = {
       activeServer,
       activeChannelsByServer,
       channels,
+      xmppWebSocketUrl,
+      xmppJid,
+      xmppPassword,
+      xmppRoomJid,
+      xmppSpaceServiceJid,
+      xmppSpaceNode,
+      xmppNick,
       editDraftByMessage,
       newChannelName,
       newServerName,
@@ -1001,18 +1226,41 @@ function App() {
       activeVoiceRoom,
       iceServersText,
       draftByChannel,
-      signalInput,
-      signalOutput,
       searchQuery,
       searchIndex,
       roomPeerFingerprint,
       recentEmojis,
       gifFavorites,
+      avatarUrl,
+      avatarFrameUrl,
+      bannerUrl,
+      avatarAnimated,
+      chatPaneMode,
+      chatPaneChannels,
+      chatPaneDrafts,
+      chatPaneReplyTargets,
+      chatPaneCompactSections,
       mainTab,
+      events,
       membersOpen,
       notificationsMuted,
       name,
       presence,
+      about,
+      pronouns,
+      pronunciation,
+      hobbies,
+      languages,
+      accentColor,
+      statusMessage,
+      website,
+      location,
+      headline,
+      timezone,
+      birthday,
+      company,
+      school,
+      major,
       servers,
       unreadByChannel,
     };
@@ -1026,20 +1274,50 @@ function App() {
     newChannelName,
     newServerName,
     replyTargetByChannel,
-    signalInput,
-    signalOutput,
     searchQuery,
     searchIndex,
     roomPeerFingerprint,
     recentEmojis,
     gifFavorites,
+    avatarUrl,
+    avatarFrameUrl,
+    bannerUrl,
+    avatarAnimated,
+    chatPaneMode,
+    chatPaneChannels,
+    chatPaneDrafts,
+    chatPaneReplyTargets,
+    chatPaneCompactSections,
     mainTab,
+    events,
     channels,
+    xmppWebSocketUrl,
+    xmppJid,
+    xmppPassword,
+    xmppRoomJid,
+    xmppSpaceServiceJid,
+    xmppSpaceNode,
+    xmppNick,
     iceServersText,
     membersOpen,
     name,
     notificationsMuted,
     presence,
+    about,
+    pronouns,
+    pronunciation,
+    hobbies,
+    languages,
+    accentColor,
+    statusMessage,
+    website,
+    location,
+    headline,
+    timezone,
+    birthday,
+    company,
+    school,
+    major,
     servers,
     unreadByChannel,
   ]);
@@ -1103,10 +1381,204 @@ function App() {
   }, [historyPassphrase, historyUnlocked, messages, passphrase]);
 
   useEffect(() => {
+    const websocketUrl = xmppConnectionSettings.websocketUrl;
+    const jid = xmppConnectionSettings.jid;
+    const password = xmppConnectionSettings.password;
+    const room = xmppConnectionSettings.roomJid;
+    const spaceServiceJid = xmppConnectionSettings.spaceServiceJid;
+    const spaceNode = xmppConnectionSettings.spaceNode;
+
+    xmppClientRef.current?.disconnect();
+    xmppClientRef.current = null;
+    xmppRoomRef.current = null;
+    xmppSpaceRef.current = null;
+
+    if (!websocketUrl || !jid || !password || (!room && (!spaceServiceJid || !spaceNode))) {
+      setXmppStatus("disabled");
+      return undefined;
+    }
+
+    let cancelled = false;
+    setXmppStatus("connecting");
+
+    const client = XMPP.createClient({
+      jid,
+      password,
+      transports: {
+        websocket: websocketUrl,
+      },
+      transportPreferenceOrder: ["websocket"],
+      autoReconnect: true,
+    });
+
+    xmppClientRef.current = client;
+
+    client.on("stream:start", () => {
+      if (!cancelled) log("XMPP stream started.");
+    });
+    client.on("connected", () => {
+      if (!cancelled) log("XMPP transport connected.");
+    });
+    client.on("session:prebind", () => {
+      if (!cancelled) log("XMPP session prebind.");
+    });
+    client.on("session:bound", () => {
+      if (!cancelled) log("XMPP session bound.");
+    });
+
+    client.on("session:started", async () => {
+      if (cancelled) return;
+      try {
+        client.sendPresence();
+        if (spaceServiceJid && spaceNode) {
+          await client.subscribeToNode(spaceServiceJid, { node: spaceNode });
+          xmppSpaceRef.current = { serviceJid: spaceServiceJid, node: spaceNode };
+          if (!cancelled) setXmppStatus("connected");
+          log(`XMPP space subscribed: ${spaceServiceJid} / ${spaceNode}.`);
+        } else {
+          xmppRoomRef.current = room;
+          await client.joinRoom(room, xmppConnectionSettings.nick);
+          if (!cancelled) setXmppStatus("connected");
+          log(`XMPP room connected: ${room}.`);
+        }
+      } catch (error) {
+        if (!cancelled) setXmppStatus("failed");
+        const detail =
+          error instanceof Error ? error.message : typeof error === "string" ? error : "unknown error";
+        log(spaceServiceJid && spaceNode ? `Could not join the XMPP space: ${detail}.` : `Could not join the XMPP room: ${detail}.`);
+      }
+    });
+
+    client.on("groupchat", (msg) => {
+      if (cancelled || !msg.body) return;
+      void handleEncryptedWireText(msg.body);
+    });
+
+    client.on("muc:failed", (presence) => {
+      if (!cancelled) {
+        const muc = (presence as any)?.muc ?? {};
+        const reason = muc.passwordRequired
+          ? "password required"
+          : muc.roomNotFound
+            ? "room not found"
+          : muc.forbidden
+            ? "forbidden"
+          : muc.conflict
+            ? "nickname conflict"
+            : "unknown";
+        log(`MUC join failed: ${reason}.`);
+      }
+    });
+
+    client.on("pubsub:published", (msg) => {
+      if (cancelled || !xmppSpaceRef.current) return;
+      const published = msg.pubsub.items?.published ?? [];
+      if (msg.pubsub.items?.node !== xmppSpaceRef.current.node) return;
+      published.forEach((item) => {
+        const content = item.content as { json?: unknown } | undefined;
+        const payload = content?.json;
+        if (typeof payload === "string") {
+          void handleEncryptedWireText(payload);
+          return;
+        }
+        if (payload && typeof payload === "object") {
+          void handleEncryptedWireText(JSON.stringify(payload));
+        }
+      });
+    });
+
+    client.on("disconnected", () => {
+      if (!cancelled) setXmppStatus("disconnected");
+    });
+    client.on("auth:failed", () => {
+      if (!cancelled) {
+        setXmppStatus("failed");
+        log("XMPP auth failed.");
+      }
+    });
+    client.on("stream:error", (streamError, error) => {
+      if (!cancelled) {
+        setXmppStatus("failed");
+        const detail =
+          streamError?.condition ??
+          (error instanceof Error ? error.message : typeof error === "string" ? error : "unknown error");
+        log(`XMPP stream error: ${detail}.`);
+      }
+    });
+    client.on("session:end", () => {
+      if (!cancelled) log("XMPP session ended.");
+    });
+    client.on("stream:end", () => {
+      if (!cancelled) log("XMPP stream ended.");
+    });
+    client.on("--transport-disconnected", () => {
+      if (!cancelled) log("XMPP transport disconnected.");
+    });
+    client.on("stanza:failed", () => {
+      if (!cancelled) log("XMPP stanza failed.");
+    });
+    client.on("muc:error", () => {
+      if (!cancelled) setXmppStatus("failed");
+    });
+
+    void client.connect();
+
+    return () => {
+      cancelled = true;
+      client.disconnect();
+    };
+  }, [xmppConnectionSettings]);
+
+  useEffect(() => {
+    if (prevXmppStatusRef.current === xmppStatus) return;
+    prevXmppStatusRef.current = xmppStatus;
+    log(`XMPP status: ${xmppStatus}`);
+  }, [xmppStatus]);
+
+  useEffect(() => {
     const list = messageListRef.current;
     if (!list || !followLatest) return;
     list.scrollTop = list.scrollHeight;
   }, [activeChannel, followLatest, visibleMessages]);
+
+  useEffect(() => {
+    if (chatPaneMode !== "split") return;
+
+    requestAnimationFrame(() => {
+      chatPaneChannels.forEach((channelId, paneIndex) => {
+        const paneKey = `pane-${paneIndex}`;
+        const list = paneMessageListRefs.current[paneKey];
+        if (!list) return;
+
+        const nextCount = messages.filter((message) => message.channel === channelId).length;
+        const prevCount = paneMessageCountRef.current[paneKey] ?? 0;
+        const nearBottom = isNearBottom(list.scrollTop, list.clientHeight, list.scrollHeight);
+
+        if (nextCount > prevCount && nearBottom) {
+          list.scrollTop = list.scrollHeight;
+        }
+
+        paneMessageCountRef.current[paneKey] = nextCount;
+      });
+    });
+  }, [chatPaneChannels, chatPaneMode, messages]);
+
+  useEffect(() => {
+    if (chatPaneMode !== "split") {
+      setSplitViewportCompact(false);
+      setSplitViewportStacked(false);
+      return;
+    }
+
+    function updateSplitViewportCompact() {
+      setSplitViewportCompact(window.innerWidth < 1200);
+      setSplitViewportStacked(window.innerWidth < 820);
+    }
+
+    updateSplitViewportCompact();
+    window.addEventListener("resize", updateSplitViewportCompact, { passive: true });
+    return () => window.removeEventListener("resize", updateSplitViewportCompact);
+  }, [chatPaneMode]);
 
   useEffect(() => {
     const element = composerInputRef.current;
@@ -1121,6 +1593,24 @@ function App() {
     element.style.height = `${nextHeight}px`;
     element.style.overflowY = element.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [activeChannel, draft]);
+
+  useEffect(() => {
+    if (chatPaneMode !== "split") return;
+
+    chatPaneChannels.forEach((_, paneIndex) => {
+      const element = paneComposerInputRefs.current[`pane-${paneIndex}`];
+      if (!element) return;
+
+      element.style.height = "auto";
+      const computed = window.getComputedStyle(element);
+      const lineHeight = Number.parseFloat(computed.lineHeight) || 20;
+      const padding = Number.parseFloat(computed.paddingTop) + Number.parseFloat(computed.paddingBottom);
+      const maxHeight = lineHeight * 5 + padding;
+      const nextHeight = Math.min(element.scrollHeight, maxHeight);
+      element.style.height = `${nextHeight}px`;
+      element.style.overflowY = element.scrollHeight > maxHeight ? "auto" : "hidden";
+    });
+  }, [chatPaneChannels, chatPaneDrafts, chatPaneMode]);
 
   useEffect(() => {
     const list = messageListRef.current;
@@ -1141,11 +1631,16 @@ function App() {
   }, [activeChannel, searchQuery]);
 
   useEffect(() => {
+    if (chatPaneMode === "split") return;
     setPendingGif(null);
+    setPendingGifChannel(activeChannel);
+    setComposerTargetChannel(activeChannel);
+    setPendingGifPaneIndex(null);
+    setComposerTargetPaneIndex(null);
     setGifOpen(false);
     setGifQuery("");
     setGifTab("all");
-  }, [activeChannel]);
+  }, [activeChannel, chatPaneMode]);
 
   useEffect(() => {
     if (!selectedSearchMessage) return;
@@ -1165,17 +1660,34 @@ function App() {
   }, [activeChannel, messages]);
 
   useEffect(() => {
+    if (chatPaneMode !== "split") return;
+
+    const visibleChannels = new Set(chatPaneChannels);
+    visibleChannels.forEach((channelId) => {
+      const lastReadAt = messages.reduce((latest, message) => {
+        if (message.channel !== channelId) return latest;
+        return Math.max(latest, message.at);
+      }, 0);
+      if (lastReadAt === 0) return;
+      if (lastReadSyncRef.current[channelId] === lastReadAt) return;
+      lastReadSyncRef.current[channelId] = lastReadAt;
+      setUnreadByChannel((counts) => clearUnreadCount(counts, channelId));
+      void sendReadSync(channelId, lastReadAt);
+    });
+  }, [chatPaneChannels, chatPaneMode, messages]);
+
+  useEffect(() => {
     if (!connected) return;
-    const active = draft.trim().length > 0;
-    void sendTypingSync(active);
+    const active = focusedComposerDraft.trim().length > 0;
+    void sendTypingSync(active, focusedComposerChannel);
     if (!active) return;
 
     const timeout = window.setTimeout(() => {
-      void sendTypingSync(false);
+      void sendTypingSync(false, focusedComposerChannel);
     }, 1200);
 
     return () => window.clearTimeout(timeout);
-  }, [connected, draft, activeChannel]);
+  }, [connected, focusedComposerChannel, focusedComposerDraft]);
 
   useEffect(() => {
     setActiveChannelsByServer((current) => {
@@ -1196,6 +1708,28 @@ function App() {
   useEffect(() => {
     setUnreadByChannel((current) => clearUnreadCount(current, activeChannel));
   }, [activeChannel]);
+
+  useEffect(() => {
+    const channelIds = channels.map((channel) => channel.id);
+    const fallbackChannelId = channelIds[0] ?? activeChannel;
+    const nextPaneChannels = normalizeChatPaneChannels(chatPaneChannels, DEFAULT_CHAT_PANE_COUNT, channelIds, fallbackChannelId);
+    const nextPaneDrafts = normalizeChatPaneDrafts(chatPaneDrafts, nextPaneChannels.length);
+    const nextPaneReplyTargets = normalizeChatPaneReplyTargets(chatPaneReplyTargets, nextPaneChannels.length);
+    const nextPaneCompactSections = normalizeChatPaneCompactSections(chatPaneCompactSections, nextPaneChannels.length);
+
+    if (JSON.stringify(nextPaneChannels) !== JSON.stringify(chatPaneChannels)) {
+      setChatPaneChannels(nextPaneChannels);
+    }
+    if (JSON.stringify(nextPaneDrafts) !== JSON.stringify(chatPaneDrafts)) {
+      setChatPaneDrafts(nextPaneDrafts);
+    }
+    if (JSON.stringify(nextPaneReplyTargets) !== JSON.stringify(chatPaneReplyTargets)) {
+      setChatPaneReplyTargets(nextPaneReplyTargets);
+    }
+    if (JSON.stringify(nextPaneCompactSections) !== JSON.stringify(chatPaneCompactSections)) {
+      setChatPaneCompactSections(nextPaneCompactSections);
+    }
+  }, [activeChannel, channels, chatPaneChannels, chatPaneCompactSections, chatPaneDrafts, chatPaneReplyTargets]);
 
   useEffect(() => {
     if (modal !== "room") return;
@@ -1263,15 +1797,32 @@ function App() {
       void sendProfileSync({
         name: name || "Anonymous",
         presence,
+        about,
+        pronouns,
+        pronunciation,
+        hobbies,
+        company,
+        school,
+        major,
         notificationsMuted,
         membersOpen,
         activeServer,
         activeChannel,
+        avatarUrl,
+        avatarFrameUrl,
+        bannerUrl,
+        avatarAnimated,
+        statusMessage,
+        website,
+        location,
+        headline,
+        timezone,
+        birthday,
       });
     }, 500);
 
     return () => window.clearTimeout(handle);
-  }, [connected, membersOpen, name, notificationsMuted, presence]);
+  }, [about, accentColor, avatarAnimated, avatarFrameUrl, avatarUrl, bannerUrl, birthday, company, connected, headline, hobbies, languages, location, major, membersOpen, name, notificationsMuted, presence, pronouns, pronunciation, statusMessage, timezone, website]);
 
   useEffect(() => {
     function closeEmojiPicker(event: PointerEvent) {
@@ -1279,6 +1830,7 @@ function App() {
       if (emojiPickerRef.current?.contains(target)) return;
       if (gifPickerRef.current?.contains(target)) return;
       if (composerInputRef.current?.contains(target)) return;
+      if (target instanceof HTMLElement && (target.closest(".composer") || target.closest(".paneComposer"))) return;
       if (reactionPickerSlotRef.current?.contains(target)) return;
       if (messageMenuRef.current?.contains(target)) return;
       setEmojiOpen(false);
@@ -1320,6 +1872,8 @@ function App() {
     return () => {
       stopLocalMedia();
       clearRemoteMedia();
+      stopAudioMeter("local");
+      stopAudioMeter("peer");
       revokeAttachmentUrls();
       pcRef.current?.close();
       channelRef.current?.close();
@@ -1339,9 +1893,34 @@ function App() {
   }, [screenSharing]);
 
   useEffect(() => {
+    if (!localCameraVideoRef.current) return;
+    localCameraVideoRef.current.srcObject = cameraStreamRef.current;
+    void localCameraVideoRef.current.play().catch(() => undefined);
+  }, [cameraActive]);
+
+  useEffect(() => {
     if (!remoteVideoRef.current) return;
     remoteVideoRef.current.srcObject = remoteStreamRef.current;
     void remoteVideoRef.current.play().catch(() => log("Remote video is ready; browser requires a click to play."));
+  }, [remoteVideoActive]);
+
+  useEffect(() => {
+    driveAudioMeter(micStreamRef.current, "local");
+    return () => stopAudioMeter("local");
+  }, [callActive, micMuted]);
+
+  useEffect(() => {
+    driveAudioMeter(remoteStreamRef.current, "peer");
+    return () => stopAudioMeter("peer");
+  }, [remoteMediaActive]);
+
+  useEffect(() => {
+    const stream = remoteVideoActive ? remoteStreamRef.current : null;
+    Object.values(paneMediaPreviewRefs.current).forEach((node) => {
+      if (!node) return;
+      node.srcObject = stream;
+      if (stream) void node.play().catch(() => undefined);
+    });
   }, [remoteVideoActive]);
 
   function refreshRemoteMediaState() {
@@ -1350,8 +1929,51 @@ function App() {
     setRemoteVideoActive(remoteStreamRef.current.getVideoTracks().some((track) => track.readyState === "live"));
   }
 
+  function stopAudioMeter(kind: "local" | "peer") {
+    const contextRef = kind === "local" ? localAudioContextRef : peerAudioContextRef;
+    const frameRef = kind === "local" ? localAudioFrameRef : peerAudioFrameRef;
+    const context = contextRef.current;
+    if (frameRef.current !== null) {
+      cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+    }
+    if (context) {
+      void context.close().catch(() => undefined);
+      contextRef.current = null;
+    }
+    if (kind === "local") setLocalAudioLevel(0);
+    else setPeerAudioLevel(0);
+  }
+
+  function driveAudioMeter(stream: MediaStream | null, kind: "local" | "peer") {
+    const contextRef = kind === "local" ? localAudioContextRef : peerAudioContextRef;
+    const frameRef = kind === "local" ? localAudioFrameRef : peerAudioFrameRef;
+    const setLevel = kind === "local" ? setLocalAudioLevel : setPeerAudioLevel;
+
+    stopAudioMeter(kind);
+    if (!stream || stream.getAudioTracks().length === 0) return;
+
+    const context = new AudioContext();
+    const source = context.createMediaStreamSource(stream);
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 128;
+    source.connect(analyser);
+
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const tick = () => {
+      analyser.getByteFrequencyData(data);
+      const total = data.reduce((sum, value) => sum + value, 0);
+      const nextLevel = Math.min(100, Math.round((total / (data.length * 255)) * 100));
+      setLevel(nextLevel);
+      frameRef.current = requestAnimationFrame(tick);
+    };
+
+    contextRef.current = context;
+    frameRef.current = requestAnimationFrame(tick);
+  }
+
   function log(event: string) {
-    setEvents((current) => [event, ...current].slice(0, 5));
+    setEvents((current) => [event, ...current].slice(0, 200));
   }
 
   function clearEventLog() {
@@ -1470,11 +2092,15 @@ function App() {
     setSearchIndex((current) => (current + direction + searchMatches.length) % searchMatches.length);
   }
 
-  function jumpToMessage(messageId: string) {
-    const target = messages.find((message) => message.id === messageId && message.channel === activeChannel);
+  function jumpToMessage(messageId: string, channelId = activeChannel) {
+    const target = messages.find((message) => message.id === messageId && message.channel === channelId);
     if (!target) {
       log("Original message is no longer available.");
       return;
+    }
+
+    if (activeChannel !== channelId) {
+      setActiveChannel(channelId);
     }
 
     if (searchActive) setSearchQuery("");
@@ -1490,6 +2116,15 @@ function App() {
     if (!list) return;
 
     setFollowLatest(true);
+    requestAnimationFrame(() => {
+      list.scrollTop = list.scrollHeight;
+    });
+  }
+
+  function jumpPaneToLatest(paneIndex: number) {
+    const list = paneMessageListRefs.current[`pane-${paneIndex}`];
+    if (!list) return;
+
     requestAnimationFrame(() => {
       list.scrollTop = list.scrollHeight;
     });
@@ -1528,6 +2163,36 @@ function App() {
     }
   }
 
+  async function sendXmppEncryptedPayload(encrypted: WireMessage) {
+    const client = xmppClientRef.current;
+    const room = xmppRoomRef.current?.trim();
+    const space = xmppSpaceRef.current;
+    if (!client || xmppStatus !== "connected") return false;
+
+    try {
+      if (space) {
+        await client.publish(space.serviceJid, space.node, {
+          itemType: NS_JSON_0,
+          json: encrypted,
+        });
+        return true;
+      }
+      if (!room) {
+        log("Saved locally. Connect XMPP or a peer channel to deliver it live.");
+        return false;
+      }
+      client.sendMessage({
+        to: room,
+        type: "groupchat",
+        body: JSON.stringify(encrypted),
+      });
+      return true;
+    } catch {
+      log("Could not reach the XMPP room.");
+      return false;
+    }
+  }
+
   function collectWorkspaceBackupSettings(): WorkspaceBackupSettings {
     return {
       activeServer,
@@ -1539,20 +2204,47 @@ function App() {
       notificationsMuted,
       name,
       presence,
+      about,
+      pronouns,
+      pronunciation,
+      hobbies,
+      languages,
+      accentColor,
+      statusMessage,
+      website,
+      location,
+      headline,
+      timezone,
+      birthday,
       recentEmojis,
       gifFavorites,
+      avatarUrl,
+      avatarFrameUrl,
+      bannerUrl,
+      avatarAnimated,
+      chatPaneMode,
+      chatPaneChannels,
+      chatPaneDrafts,
+      chatPaneReplyTargets,
+      chatPaneCompactSections,
+      events,
       newChannelName,
       newServerName,
       draftByChannel,
       editDraftByMessage,
       replyTargetByChannel,
-      signalInput,
-      signalOutput,
       searchQuery,
       searchIndex,
       roomPeerFingerprint,
       servers,
       unreadByChannel,
+      xmppWebSocketUrl,
+      xmppJid,
+      xmppPassword,
+      xmppRoomJid,
+      xmppSpaceServiceJid,
+      xmppSpaceNode,
+      xmppNick,
     };
   }
 
@@ -1596,21 +2288,72 @@ function App() {
       [nextActiveServer]: nextActiveChannel,
     });
     setActiveChannel(nextActiveChannel);
+    setXmppWebSocketUrl(settings.xmppWebSocketUrl ?? "");
+    setXmppJid(settings.xmppJid ?? "");
+    setXmppPassword(settings.xmppPassword ?? "");
+    setXmppRoomJid(settings.xmppRoomJid ?? "");
+    setXmppSpaceServiceJid(settings.xmppSpaceServiceJid ?? "");
+    setXmppSpaceNode(settings.xmppSpaceNode ?? "");
+    setXmppNick(settings.xmppNick ?? "");
+    setXmppConnectionSettings(
+      normalizeXmppConnectionSettings(
+        {
+          websocketUrl: settings.xmppWebSocketUrl ?? "",
+          jid: settings.xmppJid ?? "",
+          password: settings.xmppPassword ?? "",
+          roomJid: settings.xmppRoomJid ?? "",
+          spaceServiceJid: settings.xmppSpaceServiceJid ?? "",
+          spaceNode: settings.xmppSpaceNode ?? "",
+          nick: settings.xmppNick ?? "",
+        },
+        settings.name ?? DEFAULT_NAME,
+      ),
+    );
     setActiveVoiceRoom(settings.activeVoiceRoom ?? null);
     setIceServersText(settings.iceServersText ?? formatIceServers(DEFAULT_ICE_SERVERS));
     setMembersOpen(settings.membersOpen ?? true);
     setNotificationsMuted(settings.notificationsMuted ?? false);
     setName(settings.name ?? "Anonymous");
-    setPresence(settings.presence ?? "direct peer online");
+    setPresence(settings.presence ?? DEFAULT_PRESENCE);
+    setAbout(settings.about ?? "");
+    setPronouns(settings.pronouns ?? "");
+    setPronunciation(settings.pronunciation ?? "");
+    setHobbies(settings.hobbies ?? "");
+    setLanguages(settings.languages ?? "");
+    setCompany(settings.company ?? "");
+    setSchool(settings.school ?? "");
+    setMajor(settings.major ?? "");
+    setAccentColor(settings.accentColor ?? "#7c8cff");
+    setStatusMessage(settings.statusMessage ?? "");
+    setWebsite(settings.website ?? "");
+    setLocation(settings.location ?? "");
+    setHeadline(settings.headline ?? "");
+    setTimezone(settings.timezone ?? "");
+    setBirthday(settings.birthday ?? "");
     setRecentEmojis(settings.recentEmojis ?? defaultRecentEmojis);
     setGifFavorites(settings.gifFavorites ?? []);
+    setAvatarUrl(settings.avatarUrl ?? "");
+    setAvatarFrameUrl(settings.avatarFrameUrl ?? "");
+    setBannerUrl(settings.bannerUrl ?? "");
+    setAvatarAnimated(settings.avatarAnimated ?? false);
+    setChatPaneMode(settings.chatPaneMode ?? "single");
+    setChatPaneChannels(
+      normalizeChatPaneChannels(
+        settings.chatPaneChannels,
+        DEFAULT_CHAT_PANE_COUNT,
+        nextChannels.map((channel) => channel.id),
+        nextActiveChannel,
+      ),
+    );
+    setChatPaneDrafts(normalizeChatPaneDrafts(settings.chatPaneDrafts, DEFAULT_CHAT_PANE_COUNT));
+    setChatPaneReplyTargets(normalizeChatPaneReplyTargets(settings.chatPaneReplyTargets, DEFAULT_CHAT_PANE_COUNT));
+    setChatPaneCompactSections(normalizeChatPaneCompactSections(settings.chatPaneCompactSections, DEFAULT_CHAT_PANE_COUNT));
+    setEvents(settings.events?.length ? settings.events.slice(0, 200) : ["Ready for XMPP federation."]);
     setNewChannelName(settings.newChannelName ?? "");
     setNewServerName(settings.newServerName ?? "");
     setDraftByChannel(settings.draftByChannel ?? {});
     setEditDraftByMessage(settings.editDraftByMessage ?? {});
     setReplyTargetByChannel(settings.replyTargetByChannel ?? {});
-    setSignalInput(settings.signalInput ?? "");
-    setSignalOutput(settings.signalOutput ?? "");
     setSearchQuery(settings.searchQuery ?? "");
     setSearchIndex(settings.searchIndex ?? 0);
     setRoomPeerFingerprint(settings.roomPeerFingerprint ?? "");
@@ -1627,6 +2370,11 @@ function App() {
     setSelectedMember(null);
     setPeerTypingChannel(null);
     setPendingGif(null);
+    setPendingGifPaneIndex(null);
+    setComposerTargetPaneIndex(null);
+    setPendingAttachment(null);
+    setPendingAttachmentChannel(nextActiveChannel);
+    setPendingAttachmentPaneIndex(null);
     lastReadSyncRef.current = {};
     revokeAttachmentUrls();
   }
@@ -1650,10 +2398,13 @@ function App() {
 
   function stopLocalMedia() {
     micStreamRef.current?.getTracks().forEach((track) => track.stop());
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
     screenStreamRef.current?.getTracks().forEach((track) => track.stop());
     micStreamRef.current = null;
+    cameraStreamRef.current = null;
     screenStreamRef.current = null;
     setCallActive(false);
+    setCameraActive(false);
     setScreenSharing(false);
     setMicMuted(false);
   }
@@ -1665,6 +2416,7 @@ function App() {
     });
     setRemoteMediaActive(false);
     setRemoteVideoActive(false);
+    setPeerCameraActive(false);
   }
 
   function disconnectPeer() {
@@ -1681,26 +2433,67 @@ function App() {
     log("Disconnected peer session.");
   }
 
-  function requestDisconnect() {
-    void sendSessionControl("disconnect");
-    disconnectPeer();
-  }
-
-  async function sendProfileSync(profile: {
-    name: string;
-    presence: string;
-    notificationsMuted: boolean;
-    membersOpen: boolean;
-    activeServer: string;
-    activeChannel: string;
-  }) {
+  async function sendProfileSync(
+    profile: Partial<{
+      name: string;
+      presence: string;
+      notificationsMuted: boolean;
+      membersOpen: boolean;
+      activeServer: string;
+      activeChannel: string;
+      avatarUrl: string;
+      avatarFrameUrl: string;
+      bannerUrl: string;
+      avatarAnimated: boolean;
+      about: string;
+      pronouns: string;
+      pronunciation: string;
+      hobbies: string;
+      languages: string;
+      company: string;
+      school: string;
+      major: string;
+      accentColor: string;
+      statusMessage: string;
+      website: string;
+      location: string;
+      headline: string;
+      timezone: string;
+      birthday: string;
+    }> = {},
+  ) {
+    const nextName = (profile.name ?? name) || "Anonymous";
     await sendEncryptedPayload({
       type: "profile-sync",
       id: crypto.randomUUID(),
-      author: profile.name || "Anonymous",
+      author: nextName,
       channel: activeChannel,
       at: Date.now(),
-      ...profile,
+      name: nextName,
+      presence: profile.presence ?? presence,
+      notificationsMuted: profile.notificationsMuted ?? notificationsMuted,
+      membersOpen: profile.membersOpen ?? membersOpen,
+      activeServer: profile.activeServer ?? activeServer,
+      activeChannel: profile.activeChannel ?? activeChannel,
+      avatarUrl: profile.avatarUrl ?? avatarUrl,
+      avatarFrameUrl: profile.avatarFrameUrl ?? avatarFrameUrl,
+      bannerUrl: profile.bannerUrl ?? bannerUrl,
+      avatarAnimated: profile.avatarAnimated ?? avatarAnimated,
+      about: profile.about ?? about,
+      pronouns: profile.pronouns ?? pronouns,
+      pronunciation: profile.pronunciation ?? pronunciation,
+      hobbies: profile.hobbies ?? hobbies,
+      languages: profile.languages ?? languages,
+      company: profile.company ?? company,
+      school: profile.school ?? school,
+      major: profile.major ?? major,
+      accentColor: profile.accentColor ?? accentColor,
+      statusMessage: profile.statusMessage ?? statusMessage,
+      website: profile.website ?? website,
+      location: profile.location ?? location,
+      headline: profile.headline ?? headline,
+      timezone: profile.timezone ?? timezone,
+      birthday: profile.birthday ?? birthday,
     });
   }
 
@@ -1738,7 +2531,8 @@ function App() {
       log(nextMuted ? "Notifications muted for this device." : "Notifications enabled for this device.");
       void sendProfileSync({
         name,
-        presence,
+    presence,
+    about,
         notificationsMuted: nextMuted,
         membersOpen,
         activeServer,
@@ -1755,7 +2549,7 @@ function App() {
       setCallActive(false);
       setMicMuted(false);
       addSystemMessage("Ended the local voice session.");
-      void sendMediaSync({ callActive: false, screenSharing, micMuted: false });
+      void sendMediaSync({ callActive: false, screenSharing, micMuted: false, cameraActive });
       await negotiateMedia();
       return;
     }
@@ -1766,10 +2560,39 @@ function App() {
       setMicMuted(false);
       addLocalTracksToPeer();
       addSystemMessage("Started a local voice session with microphone capture.");
-      void sendMediaSync({ callActive: true, screenSharing, micMuted: false });
+      void sendMediaSync({ callActive: true, screenSharing, micMuted: false, cameraActive });
       await negotiateMedia();
     } catch {
       log("Microphone permission denied or unavailable.");
+    }
+  }
+
+  async function toggleCamera() {
+    if (cameraActive) {
+      cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+      cameraStreamRef.current = null;
+      setCameraActive(false);
+      addSystemMessage("Camera stopped locally.");
+      void sendMediaSync({ callActive, screenSharing, micMuted, cameraActive: false });
+      await negotiateMedia();
+      return;
+    }
+
+    try {
+      cameraStreamRef.current = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      cameraStreamRef.current.getVideoTracks()[0]?.addEventListener("ended", () => {
+        setCameraActive(false);
+        cameraStreamRef.current = null;
+        void negotiateMedia();
+        log("Camera ended by browser.");
+      });
+      setCameraActive(true);
+      addLocalTracksToPeer();
+      addSystemMessage("Camera capture started locally.");
+      void sendMediaSync({ callActive, screenSharing, micMuted, cameraActive: true });
+      await negotiateMedia();
+    } catch {
+      log("Camera permission denied or unavailable.");
     }
   }
 
@@ -1779,7 +2602,7 @@ function App() {
       screenStreamRef.current = null;
       setScreenSharing(false);
       addSystemMessage("Screen share stopped.");
-      void sendMediaSync({ callActive, screenSharing: false, micMuted });
+      void sendMediaSync({ callActive, screenSharing: false, micMuted, cameraActive });
       await negotiateMedia();
       return;
     }
@@ -1795,7 +2618,7 @@ function App() {
       setScreenSharing(true);
       addLocalTracksToPeer();
       addSystemMessage("Screen share capture started locally.");
-      void sendMediaSync({ callActive, screenSharing: true, micMuted });
+      void sendMediaSync({ callActive, screenSharing: true, micMuted, cameraActive });
       await negotiateMedia();
     } catch {
       log("Screen share permission denied or unavailable.");
@@ -1814,7 +2637,7 @@ function App() {
         track.enabled = !nextMuted;
       });
       log(nextMuted ? "Microphone muted." : "Microphone unmuted.");
-      void sendMediaSync({ callActive, screenSharing, micMuted: nextMuted });
+      void sendMediaSync({ callActive, screenSharing, micMuted: nextMuted, cameraActive });
       return nextMuted;
     });
   }
@@ -2069,6 +2892,7 @@ function App() {
     setDeletingMessageId(null);
     setSelectedMember(null);
     setPendingAttachment(null);
+    setPendingAttachmentPaneIndex(null);
     setEmojiOpen(false);
     setReactionPickerMessageId(null);
   }
@@ -2135,6 +2959,12 @@ function App() {
     setDraftByChannel((currentDrafts) => moveChannelDraft(currentDrafts, current.id, label));
     setReplyTargetByChannel((currentTargets) => moveReplyTarget(currentTargets, current.id, label));
     setUnreadByChannel((counts) => moveUnreadCount(counts, current.id, label));
+    setChatPaneChannels((currentChannels) =>
+      currentChannels.map((channelId) => (channelId === current.id ? label : channelId)),
+    );
+    if (composerTargetChannel === current.id) setComposerTargetChannel(label);
+    if (pendingAttachmentChannel === current.id) setPendingAttachmentChannel(label);
+    if (pendingGifChannel === current.id) setPendingGifChannel(label);
     setActiveChannelsByServer((currentMap) =>
       Object.fromEntries(
         Object.entries(currentMap).map(([server, channelId]) => [server, channelId === current.id ? label : channelId]),
@@ -2169,6 +2999,12 @@ function App() {
     setDraftByChannel((currentDrafts) => moveChannelDraft(currentDrafts, channelId, nextChannel.id));
     setReplyTargetByChannel((currentTargets) => moveReplyTarget(currentTargets, channelId, nextChannel.id));
     setUnreadByChannel((counts) => moveUnreadCount(counts, channelId, nextChannel.id));
+    setChatPaneChannels((currentChannels) =>
+      currentChannels.map((paneChannelId) => (paneChannelId === channelId ? nextChannel.id : paneChannelId)),
+    );
+    if (composerTargetChannel === channelId) setComposerTargetChannel(nextChannel.id);
+    if (pendingAttachmentChannel === channelId) setPendingAttachmentChannel(nextChannel.id);
+    if (pendingGifChannel === channelId) setPendingGifChannel(nextChannel.id);
     setActiveChannelsByServer((currentMap) =>
       Object.fromEntries(
         Object.entries(currentMap).map(([server, channel]) => [server, channel === channelId ? nextChannel.id : channel]),
@@ -2205,7 +3041,7 @@ function App() {
       `server: ${activeServer}`,
       `channel: #${activeLabel}`,
       `presence: ${presence}`,
-      `peer status: ${status}`,
+      `xmpp status: ${xmppStatus}`,
       `notifications: ${notificationsMuted ? "muted" : "enabled"}`,
     ].join("\n");
   }
@@ -2293,21 +3129,11 @@ function App() {
     });
   }
 
-  async function sendSessionControl(action: PlainWireSessionControl["action"]) {
-    await sendEncryptedPayload({
-      type: "session-control",
-      id: crypto.randomUUID(),
-      author: name || "Anonymous",
-      channel: activeChannel,
-      at: Date.now(),
-      action,
-    });
-  }
-
   async function sendMediaSync(next: {
     callActive: boolean;
     screenSharing: boolean;
     micMuted: boolean;
+    cameraActive: boolean;
   }) {
     await sendEncryptedPayload({
       type: "media-sync",
@@ -2343,6 +3169,46 @@ function App() {
     });
   }
 
+  async function logSelectedCandidatePair(pc: RTCPeerConnection) {
+    try {
+      const stats = await pc.getStats();
+      const pair = Array.from(stats.values()).find(
+        (stat): stat is RTCIceCandidatePairStats =>
+          stat.type === "candidate-pair" && (stat.selected || stat.nominated || stat.state === "succeeded"),
+      );
+      if (!pair) {
+        log("ICE stats: no selected candidate pair yet.");
+        return;
+      }
+
+      const local = pair.localCandidateId ? stats.get(pair.localCandidateId) : undefined;
+      const remote = pair.remoteCandidateId ? stats.get(pair.remoteCandidateId) : undefined;
+      const describe = (candidate: RTCStats | undefined) => {
+        if (!candidate || candidate.type !== "local-candidate" && candidate.type !== "remote-candidate") return "unknown";
+        const iceCandidate = candidate as RTCStats & {
+          candidateType?: string;
+          protocol?: string;
+          address?: string;
+          ip?: string;
+          port?: number;
+        };
+        const parts = [
+          iceCandidate.candidateType,
+          iceCandidate.protocol,
+          iceCandidate.address ?? iceCandidate.ip ?? "",
+          iceCandidate.port ? `:${iceCandidate.port}` : "",
+        ].filter(Boolean);
+        return parts.join(" ");
+      };
+
+      log(
+        `ICE selected pair: ${describe(local)} -> ${describe(remote)} (${pair.state}, ${Math.round(pair.currentRoundTripTime ?? 0)}ms rtt)`,
+      );
+    } catch (error) {
+      log(`ICE stats error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   function getIceServers() {
     try {
       return parseIceServers(iceServersText);
@@ -2352,27 +3218,161 @@ function App() {
     }
   }
 
+  function parseXmppInviteUri(raw: string) {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      return null;
+    }
+
+    if (parsed.protocol !== "xmpp:") return null;
+
+    const target = parsed.pathname.trim();
+    if (!target) return null;
+
+    const flags = new Set<string>();
+    const params = new Map<string, string>();
+    const search = parsed.search.replace(/^\?/, "");
+    for (const segment of search.split(/[&;]/)) {
+      if (!segment) continue;
+      const [rawKey, ...rawValue] = segment.split("=");
+      const key = decodeURIComponent(rawKey).replace(/^;+/, "").trim();
+      if (!key) continue;
+      const value = rawValue.length ? decodeURIComponent(rawValue.join("=")).trim() : "";
+      if (value) params.set(key, value);
+      else flags.add(key);
+    }
+
+    return { target, params, flags };
+  }
+
+  function applyXmppInviteUri() {
+    const invite = parseXmppInviteUri(xmppInviteUri);
+    if (!invite) {
+      log("Paste a valid xmpp: invite URI first.");
+      return;
+    }
+
+    const node = invite.params.get("node");
+    const roomJid = invite.params.get("jid") ?? invite.target;
+    if (node) {
+      setXmppSpaceServiceJid(roomJid);
+      setXmppSpaceNode(node);
+      setXmppRoomJid("");
+      log(`Invite node applied for ${roomJid} / ${node}.`);
+    } else {
+      setXmppRoomJid(roomJid);
+      setXmppSpaceServiceJid("");
+      setXmppSpaceNode("");
+      log(`Invite applied for ${roomJid}.`);
+    }
+  }
+
   function saveSettings() {
     try {
       parseIceServers(iceServersText);
+      const websocketUrl = xmppWebSocketUrl.trim();
+      const jid = xmppJid.trim();
+      const password = xmppPassword.trim();
+      const room = xmppRoomJid.trim();
+      const spaceServiceJid = xmppSpaceServiceJid.trim();
+      const spaceNode = xmppSpaceNode.trim();
+      const nextXmppConnectionSettings = normalizeXmppConnectionSettings(
+        {
+          websocketUrl,
+          jid,
+          password,
+          roomJid: room,
+          spaceServiceJid,
+          spaceNode,
+          nick: xmppNick,
+        },
+        name,
+      );
+      if (websocketUrl) {
+        const parsed = new URL(websocketUrl);
+        if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+          throw new Error("XMPP WebSocket URL must use ws or wss.");
+        }
+        nextXmppConnectionSettings.websocketUrl = parsed.toString().replace(/\/+$/, "");
+        setXmppWebSocketUrl(nextXmppConnectionSettings.websocketUrl);
+      }
+      const hasRoom = Boolean(room);
+      const hasSpace = Boolean(spaceServiceJid || spaceNode);
+      if (jid || password || hasRoom || hasSpace) {
+        if (!websocketUrl || !jid || !password) {
+          throw new Error("Fill WebSocket URL, JID, and password or leave them blank.");
+        }
+        if (hasRoom && hasSpace) {
+          throw new Error("Use either a room JID or a space invite, not both.");
+        }
+        if (hasSpace && (!spaceServiceJid || !spaceNode)) {
+          throw new Error("Fill both the space service JID and node, or clear both.");
+        }
+        if (!hasRoom && !hasSpace) {
+          throw new Error("Fill either a room JID or a space invite, or leave them blank.");
+        }
+      }
+      setXmppConnectionSettings(nextXmppConnectionSettings);
       setModal(null);
       log("Settings saved.");
       void shareProfile();
     } catch (error) {
-      log(error instanceof Error ? error.message : "Invalid ICE server config.");
+      log(error instanceof Error ? error.message : "Invalid settings.");
     }
   }
 
   function resetSettings() {
+    xmppClientRef.current?.disconnect();
+    xmppClientRef.current = null;
+    xmppRoomRef.current = null;
+    xmppSpaceRef.current = null;
     setServers([...DEFAULT_SERVERS]);
     setActiveServer(DEFAULT_SERVERS[0]);
     setActiveChannelsByServer({ [DEFAULT_SERVERS[0]]: DEFAULT_CHANNELS[0].id });
     setActiveChannel(DEFAULT_CHANNELS[0].id);
     setNewServerName("");
+    setXmppWebSocketUrl("");
+    setXmppJid("");
+    setXmppPassword("");
+    setXmppRoomJid("");
+    setXmppSpaceServiceJid("");
+    setXmppSpaceNode("");
+    setXmppNick("");
+    setXmppConnectionSettings(
+      normalizeXmppConnectionSettings(
+        {
+          websocketUrl: "",
+          jid: "",
+          password: "",
+          roomJid: "",
+          spaceServiceJid: "",
+          spaceNode: "",
+          nick: "",
+        },
+        DEFAULT_NAME,
+      ),
+    );
+    setXmppStatus("disabled");
     setChannels(DEFAULT_CHANNELS);
     setNewChannelName("");
     setName(DEFAULT_NAME);
     setPresence(DEFAULT_PRESENCE);
+    setAccentColor("#7c8cff");
+    setStatusMessage("");
+    setWebsite("");
+    setLocation("");
+    setHeadline("");
+    setTimezone("");
+    setBirthday("");
+    setAvatarUrl("");
+    setAvatarFrameUrl("");
+    setBannerUrl("");
+    setAvatarAnimated(false);
     setIceServersText(formatIceServers(DEFAULT_ICE_SERVERS));
     setMembersOpen(true);
     setNotificationsMuted(false);
@@ -2381,23 +3381,49 @@ function App() {
     setDraftByChannel({});
     setEditDraftByMessage({});
     setReplyTargetByChannel({});
-    setSignalInput("");
-    setSignalOutput("");
     setSearchQuery("");
     setSearchIndex(0);
     setRoomPeerFingerprint("");
     setUnreadByChannel({});
     setGifFavorites([]);
+    setEvents(["Ready for XMPP federation."]);
     setGifTab("all");
     setGifQuery("");
     setPendingGif(null);
+    setPendingGifPaneIndex(null);
+    setComposerTargetPaneIndex(null);
+    setPendingGifChannel(DEFAULT_CHANNELS[0].id);
+    setComposerTargetChannel(DEFAULT_CHANNELS[0].id);
+    setPendingAttachment(null);
+    setPendingAttachmentChannel(DEFAULT_CHANNELS[0].id);
+    setPendingAttachmentPaneIndex(null);
     setMainTab("chat");
+    setChatPaneMode("single");
+    setChatPaneChannels(DEFAULT_CHANNELS.slice(0, DEFAULT_CHAT_PANE_COUNT).map((channel) => channel.id));
+    setChatPaneDrafts(Array.from({ length: DEFAULT_CHAT_PANE_COUNT }, () => ""));
+    setChatPaneReplyTargets(Array.from({ length: DEFAULT_CHAT_PANE_COUNT }, () => null));
+    setChatPaneCompactSections(Array.from({ length: DEFAULT_CHAT_PANE_COUNT }, () => false));
     setModal(null);
     setPeerTypingChannel(null);
     log("Workspace settings reset to defaults.");
     void sendProfileSync({
       name: DEFAULT_NAME,
       presence: DEFAULT_PRESENCE,
+      about: "",
+      pronouns: "",
+      pronunciation: "",
+      hobbies: "",
+      languages: "",
+      company: "",
+      school: "",
+      major: "",
+      accentColor: "#7c8cff",
+      statusMessage: "",
+      website: "",
+      location: "",
+      headline: "",
+      timezone: "",
+      birthday: "",
       notificationsMuted: false,
       membersOpen: true,
       activeServer: DEFAULT_SERVERS[0],
@@ -2412,6 +3438,25 @@ function App() {
     setHistoryUnlocked(true);
     setHistoryPassphrase(passphrase);
     log("Local message history cleared.");
+  }
+
+  async function readFileAsDataUrl(file: File) {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.addEventListener("load", () => resolve(String(reader.result)));
+      reader.addEventListener("error", () => reject(reader.error));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function uploadProfileArt(file: File, apply: (dataUrl: string) => void, label: string) {
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      apply(dataUrl);
+      log(`${label} uploaded: ${file.name}.`);
+    } catch {
+      log(`Could not read ${label.toLowerCase()} file.`);
+    }
   }
 
   function retryHistoryUnlock() {
@@ -2436,23 +3481,192 @@ function App() {
   }
 
   async function sendEncryptedPayload(plain: PlainWirePayload) {
+    const key = await deriveKey(passphrase);
+    const encrypted = await encryptPayload(key, plain);
+
+    if (xmppStatus === "connected" && (await sendXmppEncryptedPayload(encrypted))) {
+      processedWireIdsRef.current.add(plain.id);
+      return true;
+    }
+
     const channel = channelRef.current;
     if (channel?.readyState !== "open") {
-      log("Saved locally. Connect a peer to deliver it live.");
+      log("Saved locally. Connect XMPP or a peer channel to deliver it live.");
       return false;
     }
 
-    const key = await deriveKey(passphrase);
-    const encrypted = await encryptPayload(key, plain);
     await waitForDataChannelBuffer(channel);
     channel.send(JSON.stringify(encrypted));
+    processedWireIdsRef.current.add(plain.id);
     return true;
+  }
+
+  async function handleEncryptedWireText(raw: string) {
+    try {
+      const wire = JSON.parse(raw) as WireMessage;
+      if (processedWireIdsRef.current.has(wire.id) || messagesRef.current.some((message) => message.id === wire.id)) {
+        processedWireIdsRef.current.add(wire.id);
+        return;
+      }
+
+      const key = await deriveKey(passphrase);
+      const plain = await decryptPayload(key, wire);
+      processedWireIdsRef.current.add(wire.id);
+      if (plain.type === "receipt") {
+        handleReceipt(plain);
+        return;
+      }
+
+      if (plain.type === "reaction") {
+        handleReaction(plain);
+        return;
+      }
+
+      if (plain.type === "edit") {
+        handleEdit(plain);
+        return;
+      }
+
+      if (plain.type === "note") {
+        handleNote(plain);
+        return;
+      }
+
+      if (plain.type === "delete") {
+        handleDelete(plain);
+        return;
+      }
+
+      if (plain.type === "channel-sync") {
+        handleChannelSync(plain);
+        return;
+      }
+
+      if (plain.type === "server-sync") {
+        handleServerSync(plain);
+        return;
+      }
+
+      if (plain.type === "voice-sync") {
+        setActiveVoiceRoom(plain.room);
+        log(plain.room ? `${plain.author} joined voice room: ${plain.room}.` : `${plain.author} left the voice mesh.`);
+        return;
+      }
+
+      if (plain.type === "profile-sync") {
+        setPeerName(plain.name);
+        setPeerPresence(plain.presence);
+        setPeerAbout(plain.about ?? "");
+        setPeerPronouns(plain.pronouns ?? "");
+        setPeerPronunciation(plain.pronunciation ?? "");
+        setPeerHobbies(plain.hobbies ?? "");
+        setPeerLanguages(plain.languages ?? "");
+        setPeerCompany(plain.company ?? "");
+        setPeerSchool(plain.school ?? "");
+        setPeerMajor(plain.major ?? "");
+        setPeerAccentColor(plain.accentColor ?? "#7c8cff");
+        setPeerStatusMessage(plain.statusMessage ?? "");
+        setPeerWebsite(plain.website ?? "");
+        setPeerLocation(plain.location ?? "");
+        setPeerHeadline(plain.headline ?? "");
+        setPeerTimezone(plain.timezone ?? "");
+        setPeerBirthday(plain.birthday ?? "");
+        setPeerNotificationsMuted(plain.notificationsMuted ?? false);
+        setPeerMembersOpen(plain.membersOpen ?? true);
+        setPeerActiveServer(plain.activeServer ?? "unknown");
+        setPeerActiveChannel(plain.activeChannel ?? "unknown");
+        setPeerAvatarUrl(plain.avatarUrl ?? "");
+        setPeerAvatarFrameUrl(plain.avatarFrameUrl ?? "");
+        setPeerBannerUrl(plain.bannerUrl ?? "");
+        setPeerAvatarAnimated(plain.avatarAnimated ?? false);
+        log(`Peer profile updated: ${plain.name}.`);
+        return;
+      }
+
+      if (plain.type === "media-sync") {
+        setPeerCallActive(plain.callActive);
+        setPeerScreenSharing(plain.screenSharing);
+        setPeerMicMuted(plain.micMuted);
+        setPeerCameraActive(plain.cameraActive);
+        log(
+          `Peer media updated: ${plain.callActive ? "call on" : "call off"}, ${
+            plain.screenSharing ? "screen share on" : "screen share off"
+          }, ${plain.cameraActive ? "camera on" : "camera off"}.`,
+        );
+        return;
+      }
+
+      if (plain.type === "typing-sync") {
+        if (plain.channelId === activeChannel) {
+          setPeerTypingChannel(plain.typing ? plain.channelId : null);
+        }
+        return;
+      }
+
+      if (plain.type === "read-sync") {
+        handleRead(plain);
+        return;
+      }
+
+      if (plain.type === "session-control") {
+        if (plain.action === "disconnect") {
+          log(`${plain.author} ended the session.`);
+          disconnectPeer();
+        }
+        return;
+      }
+
+      if (plain.type === "rtc-signal") {
+        await handleRtcSignal(plain);
+        return;
+      }
+
+      if (plain.type === "attachment-chunk") {
+        handleAttachmentChunk(plain);
+        return;
+      }
+
+      setMessages((current) => [
+        ...current,
+        {
+          id: plain.id,
+          author: plain.author,
+          body: plain.type === "attachment" ? "" : plain.body,
+          channel: plain.channel,
+          at: plain.at,
+          encrypted: true,
+          replyToId: plain.type === "message" ? plain.replyToId : undefined,
+          replyToAuthor: plain.type === "message" ? plain.replyToAuthor : undefined,
+          replyToBody: plain.type === "message" ? plain.replyToBody : undefined,
+          attachment:
+            plain.type === "attachment"
+              ? {
+                  ...makeAttachment(plain.fileName, plain.mimeType, plain.size, plain.data),
+                }
+              : undefined,
+        },
+      ]);
+      if (plain.channel !== activeChannel || document.visibilityState === "hidden") {
+        setUnreadByChannel((current) => incrementUnreadCount(current, plain.channel));
+      }
+      notifyIncomingMessage(
+        plain.author,
+        plain.channel,
+        plain.type === "attachment" ? "" : plain.body,
+        plain.type === "attachment" ? plain.fileName : undefined,
+      );
+      void sendReceipt(plain.id, plain.channel);
+    } catch {
+      log("Could not decrypt a peer message. Check the shared passphrase.");
+    }
   }
 
   function addLocalTracksToPeer() {
     const pc = pcRef.current;
     if (!pc) return;
-    const activeTracks = [micStreamRef.current, screenStreamRef.current].flatMap((stream) => stream?.getTracks() ?? []);
+    const activeTracks = [micStreamRef.current, cameraStreamRef.current, screenStreamRef.current].flatMap(
+      (stream) => stream?.getTracks() ?? [],
+    );
     const activeTrackIds = new Set(activeTracks.map((track) => track.id));
 
     pc.getSenders().forEach((sender) => {
@@ -2462,7 +3676,12 @@ function App() {
     const existingTrackIds = new Set(pc.getSenders().map((sender) => sender.track?.id).filter(Boolean));
 
     activeTracks.forEach((track) => {
-      const stream = track.kind === "audio" ? micStreamRef.current : screenStreamRef.current;
+      const stream =
+        track.kind === "audio"
+          ? micStreamRef.current
+          : cameraStreamRef.current?.getVideoTracks().some((videoTrack) => videoTrack.id === track.id)
+            ? cameraStreamRef.current
+            : screenStreamRef.current;
       if (stream && !existingTrackIds.has(track.id)) pc.addTrack(track, stream);
     });
   }
@@ -2595,6 +3814,9 @@ function App() {
       setDraftByChannel((currentDrafts) => moveChannelDraft(currentDrafts, sync.channelId, sync.nextChannelId!));
       setReplyTargetByChannel((currentTargets) => moveReplyTarget(currentTargets, sync.channelId, sync.nextChannelId!));
       setUnreadByChannel((counts) => moveUnreadCount(counts, sync.channelId, sync.nextChannelId!));
+      setChatPaneChannels((currentChannels) =>
+        currentChannels.map((paneChannelId) => (paneChannelId === sync.channelId ? sync.nextChannelId! : paneChannelId)),
+      );
       setActiveChannelsByServer((currentMap) =>
         Object.fromEntries(
           Object.entries(currentMap).map(([server, channelId]) => [server, channelId === sync.channelId ? sync.nextChannelId! : channelId]),
@@ -2617,6 +3839,9 @@ function App() {
           setDraftByChannel((currentDrafts) => moveChannelDraft(currentDrafts, sync.channelId, fallback.id));
           setReplyTargetByChannel((currentTargets) => moveReplyTarget(currentTargets, sync.channelId, fallback.id));
           setUnreadByChannel((counts) => moveUnreadCount(counts, sync.channelId, fallback.id));
+          setChatPaneChannels((currentChannels) =>
+            currentChannels.map((paneChannelId) => (paneChannelId === sync.channelId ? fallback.id : paneChannelId)),
+          );
           setActiveChannelsByServer((currentMap) =>
             Object.fromEntries(
               Object.entries(currentMap).map(([server, channelId]) => [server, channelId === sync.channelId ? fallback.id : channelId]),
@@ -2750,6 +3975,7 @@ function App() {
 
   async function sendPendingAttachment() {
     if (!pendingAttachment) return;
+    const targetChannel = pendingAttachmentChannel || activeChannel;
 
     const at = Date.now();
     const id = crypto.randomUUID();
@@ -2768,7 +3994,7 @@ function App() {
         id,
         author: name || "Anonymous",
         body: "",
-        channel: activeChannel,
+        channel: targetChannel,
         at,
         local: true,
         encrypted: true,
@@ -2784,13 +4010,15 @@ function App() {
       type: "attachment",
       id,
       author: name || "Anonymous",
-      channel: activeChannel,
+      channel: targetChannel,
       at,
       fileName: pendingAttachment.fileName,
       mimeType: pendingAttachment.mimeType,
       size: pendingAttachment.size,
       data: pendingAttachment.dataUrl,
     });
+    setPendingAttachmentChannel(activeChannel);
+    setPendingAttachmentPaneIndex(null);
   }
 
   function handleAttachmentChunk(chunk: PlainWireAttachmentChunk) {
@@ -2840,7 +4068,10 @@ function App() {
     pc.onconnectionstatechange = () => {
       log(`Connection state: ${pc.connectionState}`);
       if (pc.connectionState === "connected") setStatus("connected");
-      if (["closed", "disconnected", "failed"].includes(pc.connectionState)) setStatus("closed");
+      if (["closed", "disconnected", "failed"].includes(pc.connectionState)) {
+        setStatus("closed");
+        void logSelectedCandidatePair(pc);
+      }
     };
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -2850,13 +4081,15 @@ function App() {
       if (!pc.localDescription) return;
       if (pc.iceGatheringState !== "complete") return;
       log("ICE gathering complete.");
-      setSignalOutput(JSON.stringify(pc.localDescription));
     };
     pc.onicegatheringstatechange = () => {
       log(`ICE gathering state: ${pc.iceGatheringState}`);
     };
     pc.oniceconnectionstatechange = () => {
       log(`ICE connection state: ${pc.iceConnectionState}`);
+      if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed" || pc.iceConnectionState === "failed") {
+        void logSelectedCandidatePair(pc);
+      }
     };
     pc.onicecandidateerror = (event) => {
       log(`ICE candidate error: ${event.errorCode} ${event.errorText}`);
@@ -2895,190 +4128,9 @@ function App() {
       setStatus("closed");
       log("Peer channel closed.");
     };
-    channel.onmessage = async (event) => {
-      try {
-        const wire = JSON.parse(event.data) as WireMessage;
-        const key = await deriveKey(passphrase);
-        const plain = await decryptPayload(key, wire);
-        if (plain.type === "receipt") {
-          handleReceipt(plain);
-          return;
-        }
-
-        if (plain.type === "reaction") {
-          handleReaction(plain);
-          return;
-        }
-
-        if (plain.type === "edit") {
-          handleEdit(plain);
-          return;
-        }
-
-        if (plain.type === "note") {
-          handleNote(plain);
-          return;
-        }
-
-        if (plain.type === "delete") {
-          handleDelete(plain);
-          return;
-        }
-
-        if (plain.type === "channel-sync") {
-          handleChannelSync(plain);
-          return;
-        }
-
-        if (plain.type === "server-sync") {
-          handleServerSync(plain);
-          return;
-        }
-
-        if (plain.type === "voice-sync") {
-          setActiveVoiceRoom(plain.room);
-          log(plain.room ? `${plain.author} joined voice room: ${plain.room}.` : `${plain.author} left the voice mesh.`);
-          return;
-        }
-
-        if (plain.type === "profile-sync") {
-          setPeerName(plain.name);
-          setPeerPresence(plain.presence);
-          setPeerNotificationsMuted(plain.notificationsMuted ?? false);
-          setPeerMembersOpen(plain.membersOpen ?? true);
-          setPeerActiveServer(plain.activeServer ?? "unknown");
-          setPeerActiveChannel(plain.activeChannel ?? "unknown");
-          log(`Peer profile updated: ${plain.name}.`);
-          return;
-        }
-
-        if (plain.type === "media-sync") {
-          setPeerCallActive(plain.callActive);
-          setPeerScreenSharing(plain.screenSharing);
-          setPeerMicMuted(plain.micMuted);
-          log(`Peer media updated: ${plain.callActive ? "call on" : "call off"}, ${plain.screenSharing ? "screen share on" : "screen share off"}.`);
-          return;
-        }
-
-        if (plain.type === "typing-sync") {
-          if (plain.channelId === activeChannel) {
-            setPeerTypingChannel(plain.typing ? plain.channelId : null);
-          }
-          return;
-        }
-
-        if (plain.type === "read-sync") {
-          handleRead(plain);
-          return;
-        }
-
-        if (plain.type === "session-control") {
-          if (plain.action === "disconnect") {
-            log(`${plain.author} ended the session.`);
-            disconnectPeer();
-          }
-          return;
-        }
-
-        if (plain.type === "rtc-signal") {
-          await handleRtcSignal(plain);
-          return;
-        }
-
-        if (plain.type === "attachment-chunk") {
-          handleAttachmentChunk(plain);
-          return;
-        }
-
-        setMessages((current) => [
-          ...current,
-          {
-            id: plain.id,
-            author: plain.author,
-            body: plain.type === "attachment" ? "" : plain.body,
-            channel: plain.channel,
-            at: plain.at,
-            encrypted: true,
-            replyToId: plain.type === "message" ? plain.replyToId : undefined,
-            replyToAuthor: plain.type === "message" ? plain.replyToAuthor : undefined,
-            replyToBody: plain.type === "message" ? plain.replyToBody : undefined,
-            attachment:
-              plain.type === "attachment"
-                ? {
-                    ...makeAttachment(plain.fileName, plain.mimeType, plain.size, plain.data),
-                  }
-                : undefined,
-          },
-        ]);
-        if (plain.channel !== activeChannel || document.visibilityState === "hidden") {
-          setUnreadByChannel((current) => incrementUnreadCount(current, plain.channel));
-        }
-        notifyIncomingMessage(
-          plain.author,
-          plain.channel,
-          plain.type === "attachment" ? "" : plain.body,
-          plain.type === "attachment" ? plain.fileName : undefined,
-        );
-        void sendReceipt(plain.id, plain.channel);
-      } catch {
-        log("Could not decrypt a peer message. Check the shared passphrase.");
-      }
+    channel.onmessage = (event) => {
+      void handleEncryptedWireText(event.data);
     };
-  }
-
-  async function createInvite() {
-    const pc = makePeer();
-    const channel = pc.createDataChannel("relayless-chat", { ordered: true });
-    wireChannel(channel);
-    setStatus("hosting");
-    setSignalInput("");
-    log("Creating invite and gathering network candidates.");
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    await waitForIceGatheringComplete(pc);
-    if (pc.localDescription) {
-      const payload = JSON.stringify(pc.localDescription);
-      setSignalOutput(payload);
-      void copyText(payload, "Invite copied to clipboard.");
-    }
-    log("Invite ready. Share the offer text with a peer.");
-  }
-
-  async function acceptInvite() {
-    try {
-      const pc = makePeer();
-      setStatus("joining");
-      const offer = JSON.parse(signalInput) as RTCSessionDescriptionInit;
-      await pc.setRemoteDescription(offer);
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      await waitForIceGatheringComplete(pc);
-      if (pc.localDescription) {
-        const payload = JSON.stringify(pc.localDescription);
-        setSignalOutput(payload);
-        void copyText(payload, "Answer copied to clipboard.");
-      }
-      log("Answer ready. Send it back to the host.");
-    } catch {
-      setStatus("idle");
-      log("Could not accept offer. Paste a valid offer payload first.");
-    }
-  }
-
-  async function finishPairing() {
-    if (!pcRef.current) {
-      log("Create an invite before using an answer.");
-      return;
-    }
-
-    try {
-      const answer = JSON.parse(signalInput) as RTCSessionDescriptionInit;
-      await pcRef.current.setRemoteDescription(answer);
-      setSignalInput("");
-      log("Answer accepted. Waiting for direct channel.");
-    } catch {
-      log("Could not use answer. Paste a valid answer payload first.");
-    }
   }
 
   async function sendMessage(event: FormEvent) {
@@ -3086,16 +4138,26 @@ function App() {
     await submitMessage();
   }
 
-  async function submitMessage() {
-    const body = [draft.trim(), pendingGif?.url].filter(Boolean).join(" ");
+  async function submitMessageForChannel(
+    channelId: string,
+    bodyText: string,
+    options: { includePendingGif?: boolean; targetPaneIndex?: number | null } = {},
+  ) {
+    const replyToMessageId = getReplyTarget(replyTargetByChannel, channelId);
+    const replyToMessage = replyToMessageId ? messages.find((message) => message.id === replyToMessageId) ?? null : null;
+    const includeGif =
+      options.includePendingGif &&
+      pendingGif &&
+      pendingGifChannel === channelId &&
+      pendingGifPaneIndex === (options.targetPaneIndex ?? null);
+    const body = [bodyText.trim(), includeGif ? pendingGif?.url : null].filter(Boolean).join(" ");
     if (!body) return;
-
     const base: PlainWireMessage = {
       type: "message" as const,
       kind: "chat",
       id: crypto.randomUUID(),
       author: name || "Anonymous",
-      channel: activeChannel,
+      channel: channelId,
       at: Date.now(),
       body,
       replyToId: replyToMessage?.id,
@@ -3109,7 +4171,7 @@ function App() {
         id: base.id,
         author: base.author,
         body,
-        channel: activeChannel,
+        channel: channelId,
         at: base.at,
         local: true,
         encrypted: true,
@@ -3118,28 +4180,51 @@ function App() {
         replyToBody: base.replyToBody,
       },
     ]);
-    setDraftByChannel((current) => clearChannelDraft(current, activeChannel));
-    setReplyTargetByChannel((current) => clearReplyTarget(current, activeChannel));
-    setPendingGif(null);
-    setFollowLatest(true);
-    void sendTypingSync(false);
+    if (options.targetPaneIndex !== null && options.targetPaneIndex !== undefined) {
+      setChatPaneDrafts((current) => current.map((draft, currentIndex) => (currentIndex === options.targetPaneIndex ? "" : draft)));
+      setChatPaneReplyTargets((current) => current.map((target, currentIndex) => (currentIndex === options.targetPaneIndex ? null : target)));
+    } else {
+      setDraftByChannel((current) => clearChannelDraft(current, channelId));
+      setReplyTargetByChannel((current) => clearReplyTarget(current, channelId));
+    }
+    if (includeGif) {
+      setPendingGif(null);
+      setPendingGifChannel(channelId);
+      setPendingGifPaneIndex(null);
+    }
+    if (channelId === activeChannel) setFollowLatest(true);
+    void sendTypingSync(false, channelId);
 
     await sendEncryptedPayload(base);
   }
 
+  async function submitMessage() {
+    await submitMessageForChannel(activeChannel, draft, { includePendingGif: true, targetPaneIndex: null });
+  }
+
   function insertComposerText(value: string) {
-    const input = composerInputRef.current;
-    const start = input?.selectionStart ?? draft.length;
-    const end = input?.selectionEnd ?? draft.length;
-    const nextDraft = `${draft.slice(0, start)}${value}${draft.slice(end)}`;
+    const targetChannel = composerTargetChannel || activeChannel;
+    const targetPaneIndex = composerTargetPaneIndex;
+    const currentDraft =
+      targetPaneIndex === null
+        ? getChannelDraft(draftByChannel, targetChannel)
+        : chatPaneDrafts[targetPaneIndex] ?? "";
+    const input = targetPaneIndex === null ? composerInputRef.current : paneComposerInputRefs.current[`pane-${targetPaneIndex}`] ?? null;
+    const start = input?.selectionStart ?? currentDraft.length;
+    const end = input?.selectionEnd ?? currentDraft.length;
+    const nextDraft = `${currentDraft.slice(0, start)}${value}${currentDraft.slice(end)}`;
     const nextCursor = start + value.length;
 
-    setDraftByChannel((current) => setChannelDraft(current, activeChannel, nextDraft));
-    return nextCursor;
+    if (targetPaneIndex === null) {
+      setDraftByChannel((current) => setChannelDraft(current, targetChannel, nextDraft));
+    } else {
+      setChatPaneDrafts((current) => current.map((draft, currentIndex) => (currentIndex === targetPaneIndex ? nextDraft : draft)));
+    }
+    return { nextCursor, targetChannel, targetPaneIndex };
   }
 
   function insertEmoji(emoji: string) {
-    const nextCursor = insertComposerText(emoji);
+    const { nextCursor, targetChannel, targetPaneIndex } = insertComposerText(emoji);
 
     setRecentEmojis((current) => updateRecentEmojis(current, emoji));
     setEmojiOpen(false);
@@ -3147,18 +4232,36 @@ function App() {
     setGifQuery("");
     setGifTab("all");
     requestAnimationFrame(() => {
-      composerInputRef.current?.focus();
-      composerInputRef.current?.setSelectionRange(nextCursor, nextCursor);
+      if (targetPaneIndex === null && targetChannel === activeChannel) {
+        composerInputRef.current?.focus();
+        composerInputRef.current?.setSelectionRange(nextCursor, nextCursor);
+        return;
+      }
+      if (targetPaneIndex !== null) {
+        const paneInput = paneComposerInputRefs.current[`pane-${targetPaneIndex}`];
+        paneInput?.focus();
+        paneInput?.setSelectionRange(nextCursor, nextCursor);
+      }
     });
   }
 
   function insertGif(gif: { url: string; label: string; source: string }) {
     setPendingGif(gif);
+    setPendingGifChannel(composerTargetChannel || activeChannel);
+    setPendingGifPaneIndex(composerTargetPaneIndex);
     setEmojiOpen(false);
     setGifOpen(false);
     setGifQuery("");
     setGifTab("all");
-    requestAnimationFrame(() => composerInputRef.current?.focus());
+    requestAnimationFrame(() => {
+      if (composerTargetPaneIndex === null && (composerTargetChannel || activeChannel) === activeChannel) {
+        composerInputRef.current?.focus();
+        return;
+      }
+      if (composerTargetPaneIndex !== null) {
+        paneComposerInputRefs.current[`pane-${composerTargetPaneIndex}`]?.focus();
+      }
+    });
   }
 
   function renderBodyText(text: string, keyPrefix: string) {
@@ -3282,12 +4385,1045 @@ function App() {
     return nodes;
   }
 
-  function toggleGifFavorite(gifId: string) {
-    setGifFavorites((current) => (current.includes(gifId) ? current.filter((item) => item !== gifId) : [...current, gifId]));
+  function renderMessageContent(message: ChatMessage, keyPrefix: string, mediaBaseUrl: string) {
+    const imageUrls = extractImageUrls(message.body);
+    const videoUrls = extractVideoUrls(message.body);
+    const audioUrls = extractAudioUrls(message.body);
+    const youtubeUrls = extractYouTubeUrls(message.body);
+    const tweetUrls = extractTweetUrls(message.body);
+    const mediaOnly =
+      hasOnlyLinkTokens(message.body) &&
+      (imageUrls.length > 0 || videoUrls.length > 0 || audioUrls.length > 0 || youtubeUrls.length > 0);
+
+    return (
+      <>
+        {message.body && !mediaOnly && <>{renderBodyText(message.body, keyPrefix)}</>}
+        {imageUrls.map((url) => (
+          <a className="imageEmbed" key={url} href={url} target="_blank" rel="noreferrer">
+            <img src={url} alt={url} />
+          </a>
+        ))}
+        {videoUrls.map((url) =>
+          renderVideoEmbed({
+            baseUrl: mediaBaseUrl,
+            key: url,
+            href: url,
+            url,
+            className: "videoEmbed",
+          }),
+        )}
+        {audioUrls.map((url) => (
+          <a className="audioEmbed" key={url} href={url} target="_blank" rel="noreferrer">
+            <audio controls preload="metadata">
+              <source src={url} />
+            </audio>
+          </a>
+        ))}
+        {youtubeUrls.map((url) => {
+          const videoId = getYouTubeVideoId(url);
+          if (!videoId) return null;
+          const isShort = isYouTubeShortUrl(url);
+          return (
+            <iframe
+              key={url}
+              className={`youtubeEmbed ${isShort ? "youtubeShortEmbed" : ""}`}
+              src={buildYouTubeEmbedUrl(videoId)}
+              title={`YouTube video ${videoId}`}
+              allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+              allowFullScreen
+              loading="lazy"
+            />
+          );
+        })}
+        {tweetUrls.map((url) => (
+          <TweetEmbed key={url} url={url} />
+        ))}
+        {message.attachment &&
+          (isImageMimeType(message.attachment.mimeType) ? (
+            <a
+              className="imageEmbed attachmentImage"
+              href={message.attachment.objectUrl}
+              download={message.attachment.fileName}
+              onClick={(event) => {
+                if (!message.attachment?.objectUrl) event.preventDefault();
+              }}
+            >
+              <img src={message.attachment.objectUrl} alt={message.attachment.fileName} />
+            </a>
+          ) : isVideoMimeType(message.attachment.mimeType) ? (
+            renderVideoEmbed({
+              baseUrl: mediaBaseUrl,
+              key: message.attachment.fileName,
+              href: message.attachment.objectUrl!,
+              url: message.attachment.objectUrl!,
+              className: "videoEmbed attachmentVideo",
+              sourceType: message.attachment.mimeType,
+              download: message.attachment.fileName,
+              onClick: (event) => {
+                if (!message.attachment?.objectUrl) event.preventDefault();
+              },
+            })
+          ) : isAudioMimeType(message.attachment.mimeType) ? (
+            <a
+              className="audioEmbed attachmentAudio"
+              href={message.attachment.objectUrl}
+              download={message.attachment.fileName}
+              onClick={(event) => {
+                if (!message.attachment?.objectUrl) event.preventDefault();
+              }}
+            >
+              <audio controls preload="metadata">
+                <source src={message.attachment.objectUrl} />
+              </audio>
+            </a>
+          ) : (
+            <a
+              className="attachmentCard"
+              href={message.attachment.objectUrl}
+              download={message.attachment.fileName}
+              onClick={(event) => {
+                if (!message.attachment?.objectUrl) event.preventDefault();
+              }}
+            >
+              <Paperclip size={17} />
+              <span>
+                <strong>{message.attachment.fileName}</strong>
+                <small>{formatBytes(message.attachment.size)}</small>
+              </span>
+            </a>
+          ))}
+        {hasAnyReactions(message.reactions) && (
+          <div className="reactionBar" aria-label="Message reactions">
+            {Object.entries(message.reactions ?? {}).map(([emoji, authors]) => (
+              <button
+                className={authors.includes(name || "Anonymous") ? "active" : ""}
+                type="button"
+                key={emoji}
+                onClick={() => sendReaction(message.id, emoji)}
+                title={authors.join(", ")}
+              >
+                <span>{emoji}</span>
+                <small>{authors.length}</small>
+              </button>
+            ))}
+          </div>
+        )}
+      </>
+    );
   }
 
-  async function copySignal() {
-    await copyText(signalOutput, "Copied signaling text.");
+  function renderChatWindowPane(channelId: string, paneIndex: number, paneCount: number) {
+    const paneRefKey = `pane-${paneIndex}`;
+    const paneLabel = getChannelLabel(channelId);
+    const paneMessages = messages.filter((message) => message.channel === channelId);
+    const searchTerm = searchQuery.trim().toLowerCase();
+    const paneVisibleMessages = searchTerm
+      ? paneMessages.filter((message) =>
+          `${message.author}\n${message.body}`.toLowerCase().includes(searchTerm),
+        )
+      : paneMessages;
+    const paneUnreadCount = getUnreadCountForChannel(unreadByChannel, channelId);
+    const paneDraft = chatPaneDrafts[paneIndex] ?? "";
+    const replyToMessageId = chatPaneReplyTargets[paneIndex] ?? null;
+    const paneReplyToMessage = messages.find((message) => message.id === replyToMessageId) ?? null;
+    const paneCompact = splitViewportCompact || (chatPaneCompactSections[paneIndex] ?? false);
+
+    async function submitPaneMessage() {
+      await submitMessageForChannel(channelId, paneDraft, { includePendingGif: true, targetPaneIndex: paneIndex });
+      requestAnimationFrame(() => {
+        const list = paneMessageListRefs.current[paneRefKey];
+        if (!list) return;
+        list.scrollTop = list.scrollHeight;
+      });
+    }
+
+    function clearPaneComposer() {
+      if (!paneDraft && !paneReplyToMessage && !(pendingGif && pendingGifChannel === channelId && pendingGifPaneIndex === paneIndex)) {
+        return;
+      }
+
+      setChatPaneDrafts((current) => current.map((draft, currentIndex) => (currentIndex === paneIndex ? "" : draft)));
+      setChatPaneReplyTargets((current) => current.map((target, currentIndex) => (currentIndex === paneIndex ? null : target)));
+      if (pendingGif && pendingGifChannel === channelId && pendingGifPaneIndex === paneIndex) {
+        setPendingGif(null);
+        setPendingGifChannel(channelId);
+        setPendingGifPaneIndex(null);
+      }
+      void sendTypingSync(false, channelId);
+      requestAnimationFrame(() => paneComposerInputRefs.current[paneRefKey]?.focus());
+    }
+
+    return (
+      <section className="panelSection chatWindow" key={channelId}>
+        <div className="chatWindowHeader">
+          <div className="chatWindowTitle">
+            <strong>#{paneLabel}</strong>
+            <small className="paneUnreadBadge">{paneCompact ? "compact" : paneUnreadCount > 0 ? `${paneUnreadCount} unread` : "expanded"}</small>
+          </div>
+          <div className="chatWindowActions">
+            <button
+              type="button"
+              className="secondaryButton compact"
+              onClick={() => focusChatPaneChannel(channelId)}
+              aria-label={`Focus #${paneLabel}`}
+              title="Focus channel"
+            >
+              <ExternalLink size={13} />
+            </button>
+            <button
+              type="button"
+              className="secondaryButton compact"
+              onClick={() => spotlightChatPane(paneIndex, channelId)}
+              aria-label={`Spotlight #${paneLabel}`}
+              title="Spotlight pane"
+            >
+              <Pin size={13} />
+            </button>
+            <button
+              type="button"
+              className={`secondaryButton compact ${callActive ? "active" : ""}`}
+              onClick={toggleCall}
+              aria-label={callActive ? `End voice for #${paneLabel}` : `Start voice for #${paneLabel}`}
+              title={callActive ? "End voice" : "Start voice"}
+            >
+              <PhoneCall size={13} />
+            </button>
+            <button
+              type="button"
+              className={`secondaryButton compact ${screenSharing ? "active" : ""}`}
+              onClick={toggleScreenShare}
+              aria-label={screenSharing ? `Stop screen share for #${paneLabel}` : `Start screen share for #${paneLabel}`}
+              title={screenSharing ? "Stop screen share" : "Start screen share"}
+            >
+              <ScreenShare size={13} />
+            </button>
+            {paneUnreadCount > 0 && (
+              <button
+                type="button"
+                className="secondaryButton compact"
+                onClick={() => markChatPaneRead(channelId)}
+                aria-label={`Mark #${paneLabel} as read`}
+                title="Mark read"
+              >
+                <CheckCheck size={13} />
+              </button>
+            )}
+            <button
+              type="button"
+              className="secondaryButton compact"
+              onClick={() => jumpPaneToLatest(paneIndex)}
+              aria-label={`Jump #${paneLabel} to latest`}
+              title="Jump to latest"
+            >
+              <ChevronDown size={13} />
+            </button>
+            <label className="chatPaneChannelSelect">
+              <select value={channelId} onChange={(event) => updateChatPaneChannel(paneIndex, event.target.value)}>
+                {channels.map((channel) => (
+                  <option key={channel.id} value={channel.id}>
+                    #{channel.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="secondaryButton compact"
+              onClick={() => togglePaneCompactSections(paneIndex)}
+              aria-label={paneCompact ? `Expand #${paneLabel} pane` : `Compact #${paneLabel} pane`}
+              title={paneCompact ? "Expand pane" : "Compact pane"}
+            >
+              <Columns3 size={13} />
+            </button>
+            <button
+              type="button"
+              className="secondaryButton compact"
+              onClick={() => moveChatPane(paneIndex, -1)}
+              disabled={paneIndex === 0}
+              aria-label={`Move pane ${paneIndex + 1} up`}
+            >
+              <ChevronUp size={13} />
+            </button>
+            <button
+              type="button"
+              className="secondaryButton compact"
+              onClick={() => moveChatPane(paneIndex, 1)}
+              disabled={paneIndex === paneCount - 1}
+              aria-label={`Move pane ${paneIndex + 1} down`}
+            >
+              <ChevronDown size={13} />
+            </button>
+            <button
+              type="button"
+              className="secondaryButton compact"
+              onClick={() => duplicateChatPane(paneIndex)}
+              disabled={paneCount >= MAX_CHAT_PANES}
+              aria-label={`Duplicate pane ${paneIndex + 1}`}
+              title="Duplicate pane"
+            >
+              <Copy size={13} />
+            </button>
+            {paneCount > 1 && (
+              <button
+                type="button"
+                className="secondaryButton compact"
+                onClick={() => removeChatPane(paneIndex)}
+                aria-label={`Remove pane ${paneIndex + 1}`}
+              >
+                <Trash2 size={13} />
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div
+          className="paneMessageList chatWindowMessages"
+          ref={(node) => {
+            paneMessageListRefs.current[paneRefKey] = node;
+          }}
+        >
+          {!paneCompact && (
+            <div className="paneProfileSummary">
+            <div className="paneProfileSummaryBanner">
+              {bannerUrl ? <img src={bannerUrl} alt="" /> : null}
+            </div>
+            <div className="paneProfileSummaryRow">
+              <div className={`profileAvatarWrap ${avatarAnimated ? "animated" : ""}`}>
+                {avatarUrl ? (
+                  <img className="profileAvatar" src={avatarUrl} alt={name || "Profile avatar"} />
+                ) : (
+                  <div className="profileAvatar profileAvatarFallback" aria-hidden="true">
+                    {getAvatarFallback(name || "Anonymous", name || "Anonymous")}
+                  </div>
+                )}
+                {avatarFrameUrl && <img className="profileAvatarFrame" src={avatarFrameUrl} alt="" aria-hidden="true" />}
+              </div>
+              <div className="paneProfileSummaryMeta">
+                <strong>{name || "Anonymous"}</strong>
+                <span>{presence}</span>
+                <span>{activeVoiceRoom ? `Voice: ${activeVoiceRoom}` : "Voice idle"}</span>
+              </div>
+              <div className="paneProfileSummaryPeer">
+                <div className={`profileAvatarWrap ${peerAvatarAnimated ? "animated" : ""}`}>
+                  {peerAvatarUrl ? (
+                    <img className="profileAvatar" src={peerAvatarUrl} alt={peerName} />
+                  ) : (
+                    <div className="profileAvatar profileAvatarFallback" aria-hidden="true">
+                      {getAvatarFallback(peerName, peerName)}
+                    </div>
+                  )}
+                  {peerAvatarFrameUrl && <img className="profileAvatarFrame" src={peerAvatarFrameUrl} alt="" aria-hidden="true" />}
+                </div>
+                <div className="paneProfileSummaryMeta">
+                  <strong>{peerName}</strong>
+                  <span>{peerPresence}</span>
+                  <span>{peerBannerUrl ? "Peer banner shared" : "Peer banner none"}</span>
+                </div>
+              </div>
+            </div>
+            </div>
+          )}
+          {!paneCompact && (
+            <div className="paneMediaStrip">
+            <div className="paneMediaStripHeader">
+              <PhoneCall size={13} />
+              <span>Media</span>
+            </div>
+            <div className="paneMediaStripStates">
+              <span className={callActive ? "dot online" : "dot"}>Mic {callActive ? (micMuted ? "muted" : "live") : "off"}</span>
+              <span className={screenSharing ? "dot online" : "dot"}>Share {screenSharing ? "live" : "off"}</span>
+              <span className={cameraActive ? "dot online" : "dot"}>Camera {cameraActive ? "live" : "off"}</span>
+              <span className={remoteMediaActive ? "dot online" : "dot"}>Remote {remoteMediaActive ? "receiving" : "idle"}</span>
+              <span className={peerCallActive ? "dot online" : "dot"}>Peer mic {peerCallActive ? (peerMicMuted ? "muted" : "live") : "off"}</span>
+              <span className={peerCameraActive ? "dot online" : "dot"}>Peer cam {peerCameraActive ? "live" : "off"}</span>
+              <span className={peerScreenSharing ? "dot online" : "dot"}>Peer share {peerScreenSharing ? "live" : "off"}</span>
+            </div>
+            <div className="paneAudioMeters">
+              <div className="paneAudioMeter">
+                <span>Mic</span>
+                <div className="paneAudioMeterBar">
+                  <div className="paneAudioMeterFill" style={{ width: `${callActive ? localAudioLevel : 0}%` }} />
+                </div>
+              </div>
+              <div className="paneAudioMeter">
+                <span>Peer</span>
+                <div className="paneAudioMeterBar">
+                  <div className="paneAudioMeterFill peer" style={{ width: `${peerCallActive ? peerAudioLevel : 0}%` }} />
+                </div>
+              </div>
+            </div>
+            <div className="paneMediaStripActions">
+            <button
+              type="button"
+              className={`secondaryButton compact ${micMuted ? "active" : ""}`}
+              onClick={toggleMic}
+              aria-label={micMuted ? "Unmute microphone" : "Mute microphone"}
+            >
+              {micMuted ? <MicOff size={13} /> : <Mic size={13} />}
+              {micMuted ? "Unmute" : "Mute"}
+            </button>
+            <button
+              type="button"
+              className={`secondaryButton compact ${callActive ? "active" : ""}`}
+              onClick={toggleCall}
+                aria-label={callActive ? "End voice" : "Start voice"}
+              >
+                <PhoneCall size={13} />
+                {callActive ? "End call" : "Start call"}
+              </button>
+            <button
+              type="button"
+              className={`secondaryButton compact ${screenSharing ? "active" : ""}`}
+              onClick={toggleScreenShare}
+              aria-label={screenSharing ? "Stop screen share" : "Start screen share"}
+            >
+              <ScreenShare size={13} />
+              {screenSharing ? "Stop share" : "Share screen"}
+            </button>
+            <button
+              type="button"
+              className={`secondaryButton compact ${cameraActive ? "active" : ""}`}
+              onClick={toggleCamera}
+              aria-label={cameraActive ? "Stop camera" : "Start camera"}
+            >
+              {cameraActive ? <VideoOff size={13} /> : <Video size={13} />}
+              {cameraActive ? "Stop camera" : "Start camera"}
+            </button>
+            {activeVoiceRoom && (
+              <button type="button" className="secondaryButton compact" onClick={() => joinVoiceRoom(activeVoiceRoom)}>
+                Leave room
+              </button>
+            )}
+          </div>
+            </div>
+          )}
+          {(!paneCompact && (cameraActive || screenSharing || remoteVideoActive)) && (
+            <div className="paneVideoPreview">
+              <div className="paneVideoPreviewHeader">
+                {remoteVideoActive ? <Video size={13} /> : cameraActive ? <Video size={13} /> : <ScreenShare size={13} />}
+                <span>{remoteVideoActive ? (peerCameraActive ? "Peer camera" : peerScreenSharing ? "Peer screen share" : "Remote video") : cameraActive ? "Camera" : "Screen share"}</span>
+              </div>
+              <div className="paneVideoPreviewGrid">
+                {cameraActive && (
+                  <figure>
+                    <video
+                      ref={(node) => {
+                        if (!node) return;
+                        node.srcObject = cameraStreamRef.current;
+                        void node.play().catch(() => undefined);
+                      }}
+                      autoPlay
+                      muted
+                      playsInline
+                    />
+                    <figcaption>Camera</figcaption>
+                  </figure>
+                )}
+                {screenSharing && (
+                  <figure>
+                    <video
+                      ref={(node) => {
+                        if (!node) return;
+                        node.srcObject = screenStreamRef.current;
+                        void node.play().catch(() => undefined);
+                      }}
+                      autoPlay
+                      muted
+                      playsInline
+                    />
+                    <figcaption>Screen share</figcaption>
+                  </figure>
+                )}
+                {remoteVideoActive && (
+                  <figure>
+                    <video
+                      ref={(node) => {
+                        paneMediaPreviewRefs.current[paneRefKey] = node;
+                        if (!node) return;
+                        node.srcObject = remoteStreamRef.current;
+                        void node.play().catch(() => undefined);
+                      }}
+                      autoPlay
+                      playsInline
+                      muted={!remoteVideoActive}
+                    />
+                    <figcaption>{peerCameraActive ? "Peer camera" : peerScreenSharing ? "Peer screen share" : "Remote video"}</figcaption>
+                  </figure>
+                )}
+              </div>
+            </div>
+          )}
+          {!paneCompact && (
+            <div className="paneVoiceMesh">
+            <div className="paneVoiceMeshHeader">
+              <Volume2 size={13} />
+              <span>Voice mesh</span>
+              <small>{activeVoiceRoom ? `Active: ${activeVoiceRoom}` : "Idle"}</small>
+            </div>
+            <div className="paneVoiceMeshRooms">
+              {voiceRooms.map((room) => (
+                <button
+                  key={room}
+                  type="button"
+                  className={`secondaryButton compact ${activeVoiceRoom === room ? "active" : ""}`}
+                  onClick={() => joinVoiceRoom(room)}
+                >
+                  {room}
+                </button>
+              ))}
+            </div>
+            </div>
+          )}
+          {paneVisibleMessages.slice(-20).map((message) => (
+            <div
+              key={message.id}
+              className="paneMessageItem"
+              role="button"
+              tabIndex={0}
+              onClick={() => jumpToMessage(message.id, channelId)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                jumpToMessage(message.id, channelId);
+              }}
+            >
+              <div className="paneMessageItemMeta">
+                <strong>{message.author}</strong>
+                <span>{new Date(message.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                <button
+                  type="button"
+                  className="messageAction"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setChatPaneReplyTargets((current) => current.map((target, currentIndex) => (currentIndex === paneIndex ? message.id : target)));
+                    setComposerTargetChannel(channelId);
+                    setComposerTargetPaneIndex(paneIndex);
+                    requestAnimationFrame(() => paneComposerInputRefs.current[paneRefKey]?.focus());
+                  }}
+                  aria-label={`Reply to ${message.author}`}
+                  title="Reply"
+                >
+                  <Reply size={13} />
+                </button>
+                <button
+                  type="button"
+                  className="messageAction"
+                  onClick={(event) => toggleMessageMenu(message.id, event.currentTarget)}
+                  aria-label="Message actions"
+                  aria-expanded={messageMenuMessageId === message.id}
+                  title="Message actions"
+                >
+                  <MoreHorizontal size={13} />
+                </button>
+              </div>
+              <div className="paneMessageItemBodyRich">
+                {message.body || message.attachment || hasAnyReactions(message.reactions)
+                  ? renderMessageContent(message, `pane-chat-${message.id}`, window.location.origin)
+                  : "Empty message"}
+              </div>
+            </div>
+          ))}
+          {paneVisibleMessages.length === 0 && <div className="emptyState compact">No messages in #{paneLabel}.</div>}
+        </div>
+
+        <form
+          className="paneComposer"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitPaneMessage();
+          }}
+        >
+          {paneReplyToMessage && (
+            <div
+              className="replyComposer compact"
+              role="button"
+              tabIndex={0}
+              onClick={() => jumpToMessage(paneReplyToMessage.id, channelId)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                jumpToMessage(paneReplyToMessage.id, channelId);
+              }}
+            >
+              <div>
+                <span>Replying to {paneReplyToMessage.author}</span>
+                <p>{paneReplyToMessage.body}</p>
+              </div>
+              <button
+                type="button"
+                className="messageAction"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setChatPaneReplyTargets((current) => current.map((target, currentIndex) => (currentIndex === paneIndex ? null : target)));
+                }}
+                aria-label="Cancel reply"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          )}
+          {pendingGif && pendingGifChannel === channelId && pendingGifPaneIndex === paneIndex && (
+            <div className="gifComposerPreview" role="group" aria-label="Selected GIF preview">
+              <img src={pendingGif.url} alt={pendingGif.label} />
+              <div className="gifComposerPreviewMeta">
+                <strong>{pendingGif.label}</strong>
+                <span>{pendingGif.source}</span>
+              </div>
+              <button
+                type="button"
+                className="gifComposerPreviewClear"
+                onClick={() => {
+                  setPendingGif(null);
+                  setPendingGifChannel(activeChannel);
+                  setPendingGifPaneIndex(null);
+                }}
+                aria-label="Remove selected GIF"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          )}
+          {gifOpen && composerTargetChannel === channelId && (
+            <div ref={gifPickerRef} className="gifPicker panePicker" role="dialog" aria-label="GIF picker">
+              <div className="gifPickerHeader">
+                <span>GIFs</span>
+                <button type="button" onClick={() => setGifOpen(false)} aria-label="Close GIF picker">
+                  <X size={12} />
+                </button>
+              </div>
+              <div className="gifTabs" role="tablist" aria-label="GIF categories">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={gifTab === "all"}
+                  className={gifTab === "all" ? "active" : ""}
+                  onClick={() => setGifTab("all")}
+                >
+                  All
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={gifTab === "favorites"}
+                  className={gifTab === "favorites" ? "active" : ""}
+                  onClick={() => setGifTab("favorites")}
+                >
+                  Favorites
+                </button>
+              </div>
+              <label className="gifPickerSearch">
+                <input
+                  ref={gifSearchRef}
+                  value={gifQuery}
+                  onChange={(event) => setGifQuery(event.target.value)}
+                  placeholder="Filter GIFs"
+                  aria-label="Filter GIFs"
+                />
+              </label>
+              <div className="gifGridShell">
+                {visibleGifs.length > 0 ? (
+                  gifColumns.map((column, columnIndex) => (
+                    <div className="gifColumn" key={columnIndex}>
+                      {column.map((gif) => (
+                        <div
+                          key={gif.id}
+                          className="gifCard"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => insertGif(gif)}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") return;
+                            event.preventDefault();
+                            insertGif(gif);
+                          }}
+                          aria-label={`Insert ${gif.label} GIF`}
+                        >
+                          <img src={gif.url} alt={gif.label} loading="lazy" />
+                          <button
+                            type="button"
+                            className={`gifFavorite ${gif.favorite ? "active" : ""}`}
+                            aria-label={gif.favorite ? `Remove ${gif.label} from favorites` : `Add ${gif.label} to favorites`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleGifFavorite(gif.id);
+                            }}
+                          >
+                            <Star size={24} fill={gif.favorite ? "currentColor" : "none"} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ))
+                ) : (
+                  <div className="gifEmpty">{gifTab === "favorites" ? "No favorites yet." : "No GIFs match this filter."}</div>
+                )}
+              </div>
+            </div>
+          )}
+          {emojiOpen && composerTargetChannel === channelId && (
+            <div ref={emojiPickerRef} className="emojiPicker panePicker" role="dialog" aria-label="Emoji picker">
+              {emojiPickerGroups.map((group) => (
+                <section className="emojiGroup" key={group.label}>
+                  <span>{group.label}</span>
+                  <div className="emojiGrid">
+                    {group.items.map((emoji) => (
+                      <button type="button" key={emoji} onClick={() => insertEmoji(emoji)} aria-label={`Insert ${emoji}`}>
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          )}
+          <textarea
+            ref={(node) => {
+              paneComposerInputRefs.current[paneRefKey] = node;
+            }}
+            value={paneDraft}
+            onChange={(event) =>
+              setChatPaneDrafts((current) => current.map((draft, currentIndex) => (currentIndex === paneIndex ? event.target.value : draft)))
+            }
+            onFocus={() => {
+              focusChatPaneChannel(channelId);
+              setComposerTargetChannel(channelId);
+              setComposerTargetPaneIndex(paneIndex);
+            }}
+            placeholder={`Message #${paneLabel}`}
+            rows={2}
+            onKeyDown={(event) => {
+              if (!shouldSubmitComposerMessage(event)) return;
+              event.preventDefault();
+              void submitPaneMessage();
+            }}
+          />
+          <div className="paneComposerActions">
+            <button
+              type="button"
+              className="secondaryButton compact"
+              onClick={clearPaneComposer}
+              disabled={!paneDraft && !paneReplyToMessage && !(pendingGif && pendingGifChannel === channelId && pendingGifPaneIndex === paneIndex)}
+            >
+              <X size={13} />
+              Clear
+            </button>
+            <button
+              type="button"
+              className="secondaryButton compact"
+              onClick={() => {
+                focusChatPaneChannel(channelId);
+                setComposerTargetChannel(channelId);
+                setComposerTargetPaneIndex(paneIndex);
+              }}
+            >
+              <ExternalLink size={13} />
+              Focus
+            </button>
+              <button
+                type="button"
+                className="secondaryButton compact"
+                aria-label={`Add emoji to #${paneLabel}`}
+                onClick={() => {
+                  setComposerTargetChannel(channelId);
+                  setComposerTargetPaneIndex(paneIndex);
+                  setPendingGifChannel(channelId);
+                  setEmojiOpen(true);
+                  setGifOpen(false);
+                }}
+              >
+              <Smile size={13} />
+            </button>
+              <button
+                type="button"
+                className="secondaryButton compact"
+                aria-label={`Add GIF to #${paneLabel}`}
+                onClick={() => {
+                  setComposerTargetChannel(channelId);
+                  setComposerTargetPaneIndex(paneIndex);
+                  setPendingGifChannel(channelId);
+                  setPendingGifPaneIndex(paneIndex);
+                  setGifOpen(true);
+                  setEmojiOpen(false);
+                }}
+              >
+              <Film size={13} />
+            </button>
+            <button
+              type="button"
+              className="secondaryButton compact"
+              aria-label={`Attach file to #${paneLabel}`}
+              onClick={() => {
+                setPendingAttachmentChannel(channelId);
+                setPendingAttachmentPaneIndex(paneIndex);
+                setModal("attachment");
+              }}
+            >
+              <Paperclip size={13} />
+            </button>
+            <button type="submit" aria-label={`Send message to #${paneLabel}`}>
+              <Send size={16} />
+            </button>
+          </div>
+        </form>
+      </section>
+    );
+  }
+
+  function renderSplitChatWindows() {
+    const paneCount = Math.max(1, chatPaneChannels.length);
+    const chatPaneGridColumns = Math.max(1, Math.ceil(Math.sqrt(paneCount)));
+    const chatPaneGridRows = Math.max(1, Math.ceil(paneCount / chatPaneGridColumns));
+    const chatPaneGridStyle = {
+      gridTemplateColumns: splitViewportStacked
+        ? "1fr"
+        : `repeat(${chatPaneGridColumns}, minmax(0, 1fr))`,
+      gridTemplateRows: splitViewportStacked
+        ? `repeat(${paneCount}, minmax(0, 1fr))`
+        : `repeat(${chatPaneGridRows}, minmax(0, 1fr))`,
+    } as const;
+
+    return (
+      <div className="chatSplit chatSplitWindows">
+        <div className="chatSplitToolbar">
+          <strong>Chat panes</strong>
+          <div className="chatSplitToolbarActions">
+            <button
+              type="button"
+              className="chatSplitToolbarState"
+              onClick={() => setAllPaneCompactSections(!(chatPaneCompactSections.every(Boolean)))}
+              aria-label={chatPaneCompactSections.every(Boolean) ? "Expand all panes" : "Compact all panes"}
+            >
+              {splitViewportCompact
+                ? "Auto compact"
+                : chatPaneCompactSections.every(Boolean)
+                  ? "All compact"
+                  : chatPaneCompactSections.some(Boolean)
+                    ? "Mixed"
+                    : "All expanded"}
+            </button>
+            <button type="button" className="secondaryButton compact" onClick={addChatPane} disabled={chatPaneChannels.length >= MAX_CHAT_PANES}>
+              <Plus size={13} />
+              Add pane
+            </button>
+            <button type="button" className="secondaryButton compact" onClick={() => switchChatPaneMode("single")}>
+              Single
+            </button>
+          </div>
+        </div>
+        <div
+          className="chatSplitGrid"
+          style={chatPaneGridStyle}
+        >
+          {chatPaneChannels.map((_, index) => {
+            const channelId = chatPaneChannels[index] ?? activeChannel;
+
+            return (
+              <section className="chatWindowShell" key={`pane-${index}`}>
+                {renderChatWindowPane(channelId, index, chatPaneChannels.length)}
+              </section>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  function getChannelLabel(channelId: string) {
+    return channels.find((channel) => channel.id === channelId)?.label ?? channelId;
+  }
+
+  function updateChatPaneChannel(index: number, nextChannelId: string) {
+    setChatPaneChannels((current) => current.map((channelId, currentIndex) => (currentIndex === index ? nextChannelId : channelId)));
+    paneMessageCountRef.current[`pane-${index}`] = messages.filter((message) => message.channel === nextChannelId).length;
+    if (composerTargetPaneIndex === index) {
+      setComposerTargetChannel(nextChannelId);
+    }
+    if (pendingGifPaneIndex === index) {
+      setPendingGifChannel(nextChannelId);
+    }
+    requestAnimationFrame(() => {
+      const list = paneMessageListRefs.current[`pane-${index}`];
+      if (!list) return;
+      list.scrollTop = list.scrollHeight;
+    });
+  }
+
+  function focusChatPaneChannel(channelId: string) {
+    setActiveChannel(channelId);
+    setMainTab("chat");
+    setFollowLatest(true);
+    setUnreadByChannel((counts) => clearUnreadCount(counts, channelId));
+    const readAt = messages.reduce((latest, message) => (message.channel === channelId ? Math.max(latest, message.at) : latest), 0);
+    if (readAt > 0) {
+      lastReadSyncRef.current[channelId] = readAt;
+      void sendReadSync(channelId, readAt);
+    }
+  }
+
+  function markChatPaneRead(channelId: string) {
+    setUnreadByChannel((counts) => clearUnreadCount(counts, channelId));
+    log(`Marked #${getChannelLabel(channelId)} as read.`);
+  }
+
+  function addChatPane() {
+    const nextCompact = chatPaneChannels.length >= 2;
+    setChatPaneChannels((current) => {
+      if (current.length >= MAX_CHAT_PANES) return current;
+      const nextChannelId = channels.find((channel) => !current.includes(channel.id))?.id ?? activeChannel;
+      return [...current, nextChannelId];
+    });
+    setChatPaneDrafts((current) => [...current, ""]);
+    setChatPaneReplyTargets((current) => [...current, null]);
+    setChatPaneCompactSections((current) => [...current, nextCompact]);
+    setPendingGif(null);
+    setGifOpen(false);
+    setEmojiOpen(false);
+    setComposerTargetPaneIndex(null);
+  }
+
+  function duplicateChatPane(index: number) {
+    setChatPaneChannels((current) => {
+      if (current.length >= MAX_CHAT_PANES) return current;
+      const channelId = current[index];
+      if (!channelId) return current;
+      const next = [...current];
+      next.splice(index + 1, 0, channelId);
+      return next.slice(0, MAX_CHAT_PANES);
+    });
+    setChatPaneDrafts((current) => {
+      if (current.length >= MAX_CHAT_PANES) return current;
+      const next = [...current];
+      next.splice(index + 1, 0, current[index] ?? "");
+      return next.slice(0, MAX_CHAT_PANES);
+    });
+    setChatPaneReplyTargets((current) => {
+      if (current.length >= MAX_CHAT_PANES) return current;
+      const next = [...current];
+      next.splice(index + 1, 0, current[index] ?? null);
+      return next.slice(0, MAX_CHAT_PANES);
+    });
+    setChatPaneCompactSections((current) => {
+      if (current.length >= MAX_CHAT_PANES) return current;
+      const next = [...current];
+      next.splice(index + 1, 0, current[index] ?? false);
+      return next.slice(0, MAX_CHAT_PANES);
+    });
+    setPendingGif(null);
+    setGifOpen(false);
+    setEmojiOpen(false);
+    setComposerTargetPaneIndex((current) => (current === null ? null : current > index ? current + 1 : current));
+    setPendingGifPaneIndex((current) => (current === null ? null : current > index ? current + 1 : current));
+  }
+
+  function moveChatPane(index: number, direction: -1 | 1) {
+    const nextIndex = index + direction;
+    setChatPaneChannels((current) => {
+      if (nextIndex < 0 || nextIndex >= current.length) return current;
+      const next = [...current];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+    setChatPaneDrafts((current) => {
+      if (nextIndex < 0 || nextIndex >= current.length) return current;
+      const next = [...current];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+    setChatPaneReplyTargets((current) => {
+      if (nextIndex < 0 || nextIndex >= current.length) return current;
+      const next = [...current];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+    setChatPaneCompactSections((current) => {
+      if (nextIndex < 0 || nextIndex >= current.length) return current;
+      const next = [...current];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+    setPendingGif(null);
+    setGifOpen(false);
+    setEmojiOpen(false);
+    setComposerTargetPaneIndex((current) => {
+      if (current === null) return null;
+      if (current === index) return nextIndex;
+      if (current === nextIndex) return index;
+      return current;
+    });
+    setPendingGifPaneIndex((current) => {
+      if (current === null) return null;
+      if (current === index) return nextIndex;
+      if (current === nextIndex) return index;
+      return current;
+    });
+  }
+
+  function removeChatPane(index: number) {
+    setChatPaneChannels((current) => {
+      if (current.length <= 1) return current;
+      return current.filter((_, currentIndex) => currentIndex !== index);
+    });
+    setChatPaneDrafts((current) => {
+      if (current.length <= 1) return current;
+      return current.filter((_, currentIndex) => currentIndex !== index);
+    });
+    setChatPaneReplyTargets((current) => {
+      if (current.length <= 1) return current;
+      return current.filter((_, currentIndex) => currentIndex !== index);
+    });
+    setChatPaneCompactSections((current) => {
+      if (current.length <= 1) return current;
+      return current.filter((_, currentIndex) => currentIndex !== index);
+    });
+    setPendingGif(null);
+    setGifOpen(false);
+    setEmojiOpen(false);
+    setComposerTargetPaneIndex((current) => {
+      if (current === null) return null;
+      if (current === index) return null;
+      return current > index ? current - 1 : current;
+    });
+    setPendingGifPaneIndex((current) => {
+      if (current === null) return null;
+      if (current === index) return null;
+      return current > index ? current - 1 : current;
+    });
+  }
+
+  function switchChatPaneMode(nextMode: "single" | "split") {
+    setChatPaneMode(nextMode);
+    if (nextMode === "single") {
+      setComposerTargetChannel(activeChannel);
+      setComposerTargetPaneIndex(null);
+      setPendingGifChannel(activeChannel);
+      setPendingGifPaneIndex(null);
+      setPendingGif(null);
+      setGifOpen(false);
+      setEmojiOpen(false);
+    }
+  }
+
+  function togglePaneCompactSections(paneIndex: number) {
+    setChatPaneCompactSections((current) => current.map((value, currentIndex) => (currentIndex === paneIndex ? !value : value)));
+  }
+
+  function setAllPaneCompactSections(nextValue: boolean) {
+    setChatPaneCompactSections((current) => current.map(() => nextValue));
+  }
+
+  function spotlightChatPane(paneIndex: number, channelId: string) {
+    setChatPaneMode("split");
+    setChatPaneCompactSections((current) => current.map((_, currentIndex) => currentIndex !== paneIndex));
+    focusChatPaneChannel(channelId);
+    requestAnimationFrame(() => {
+      const list = paneMessageListRefs.current[`pane-${paneIndex}`];
+      if (!list) return;
+      list.scrollTop = list.scrollHeight;
+    });
+  }
+
+  function toggleGifFavorite(gifId: string) {
+    setGifFavorites((current) => (current.includes(gifId) ? current.filter((item) => item !== gifId) : [...current, gifId]));
   }
 
   async function exportWorkspaceBackup() {
@@ -3325,118 +5461,88 @@ function App() {
     }
   }
 
-  async function pasteSignal() {
-    try {
-      const text = await navigator.clipboard.readText();
-      if (!text.trim()) {
-        log("Clipboard is empty.");
-        return;
-      }
-      setSignalInput(text);
-      log("Pasted signaling text.");
-    } catch {
-      log("Clipboard read failed.");
-    }
-  }
-
-  function clearSignal() {
-    setSignalInput("");
-    setSignalOutput("");
-    setStatus((current) => (current === "hosting" || current === "joining" ? "idle" : current));
-    log("Cleared signaling text.");
-  }
-
   const sessionPane = (
     <>
-      <section className="panelSection identity">
-        <div className="sectionHeader">
-          <Signal size={18} />
-          <strong>P2P Session</strong>
-        </div>
-        <div className={`status ${connected ? "online" : ""}`}>
-          <Circle size={10} fill="currentColor" />
-          {status}
-        </div>
-        <label>
-          Display name
-          <input value={name} onChange={(event) => setName(event.target.value)} />
-        </label>
-        <label>
-          Presence
-          <input value={presence} onChange={(event) => setPresence(event.target.value)} />
-        </label>
-        <label>
-          Shared passphrase
-          <input value={passphrase} onChange={(event) => setPassphrase(event.target.value)} type="password" />
-        </label>
-        <label>
-          Key fingerprint
-          <input readOnly value={keyFingerprint} />
-        </label>
-        <div className="identitySummary">
-          <span className={cryptoStatus === "available" ? "dot online" : "dot"} />
-          WebCrypto {cryptoStatus}
-        </div>
-        <div className="identitySummary">
-          <span className="dot online" />
-          Peer {peerName} - {peerPresence}
-        </div>
-        <div className="identitySummary">
-          <span className="dot online" />
-          Peer workspace {peerActiveServer} / #{peerActiveChannel}
-        </div>
-        <div className="identitySummary">
-          <span className={peerNotificationsMuted ? "dot" : "dot online"} />
-          Peer notifications {peerNotificationsMuted ? "muted" : "enabled"}; members {peerMembersOpen ? "open" : "hidden"}
-        </div>
-        <button className="secondaryButton compact" type="button" onClick={shareProfile}>
-          Share profile
-        </button>
-        <div className="historyStatus">
-          <span className={historyUnlocked ? "dot online" : "dot"} />
-          History {historyUnlocked ? "unlocked" : "locked"}
-          {!historyUnlocked && (
-            <button className="secondaryButton compact" type="button" onClick={retryHistoryUnlock}>
-              Retry
-            </button>
-          )}
-        </div>
-      </section>
-
       <section className="panelSection">
         <div className="sectionHeader">
-          <Radio size={18} />
-          <strong>Manual Signaling</strong>
+          <ShieldCheck size={18} />
+          <strong>XMPP Federation</strong>
         </div>
-        <div className="signalButtons">
-          <button type="button" onClick={createInvite}>Create Invite</button>
-          <button type="button" onClick={acceptInvite}>Accept Offer</button>
-          <button type="button" onClick={finishPairing}>Use Answer</button>
+        <label>
+          WebSocket URL
+          <input
+            value={xmppWebSocketUrl}
+            onChange={(event) => setXmppWebSocketUrl(event.target.value)}
+            placeholder="wss://chat.example.com/xmpp-websocket"
+          />
+        </label>
+        <label>
+          JID
+          <input value={xmppJid} onChange={(event) => setXmppJid(event.target.value)} placeholder="user@example.com" />
+        </label>
+        <label>
+          Password
+          <input value={xmppPassword} onChange={(event) => setXmppPassword(event.target.value)} type="password" placeholder="••••••••" />
+        </label>
+        <label>
+          Room JID
+          <input value={xmppRoomJid} onChange={(event) => setXmppRoomJid(event.target.value)} placeholder="room@conference.example.com" />
+        </label>
+        <label>
+          Space service JID
+          <input value={xmppSpaceServiceJid} onChange={(event) => setXmppSpaceServiceJid(event.target.value)} placeholder="spaces.example.com" />
+        </label>
+        <label>
+          Space node
+          <input value={xmppSpaceNode} onChange={(event) => setXmppSpaceNode(event.target.value)} placeholder="G4OyS0LK" />
+        </label>
+        <label>
+          Invite URI
+          <input
+            value={xmppInviteUri}
+            onChange={(event) => setXmppInviteUri(event.target.value)}
+            placeholder="xmpp:room@conference.example.com?join"
+          />
+        </label>
+        <label>
+          Nick
+          <input value={xmppNick} onChange={(event) => setXmppNick(event.target.value)} placeholder={name || DEFAULT_NAME} />
+        </label>
+        <div className="signalStatus">XMPP status: {xmppStatus}</div>
+        <div className="signalStatus">
+          Encrypted room traffic is sent through the XMPP server instead of browser-to-browser transport.
         </div>
-        <div className="signalStatus">{signalStatusText}</div>
-        <button className="secondaryButton" type="button" onClick={requestDisconnect} disabled={!pcRef.current && !channelRef.current}>
-          Disconnect
-        </button>
         <div className="signalActions">
-          <button type="button" onClick={pasteSignal}>Paste</button>
-          <button type="button" onClick={clearSignal}>Clear</button>
-        </div>
-        <textarea
-          value={signalInput}
-          onChange={(event) => setSignalInput(event.target.value)}
-          placeholder="Paste a peer offer or answer here"
-        />
-        <div className="outputHeader">
-          <span>Share this text</span>
-          <button type="button" onClick={copySignal} disabled={!signalOutput} aria-label="Copy signal">
-            <Copy size={16} />
+          <button type="button" onClick={applyXmppInviteUri}>
+            Apply invite
+          </button>
+          <button type="button" onClick={() => setXmppInviteUri("")}>
+            Clear invite
           </button>
         </div>
-        <textarea readOnly value={signalOutput} placeholder="Generated signaling payload" />
-        <button className="secondaryButton compact" type="button" onClick={copySignal} disabled={!signalOutput}>
-          <Copy size={16} />
-          Copy answer
-        </button>
+        <div className="signalActions">
+          <button type="button" onClick={() => void saveSettings()}>
+            Validate / save
+          </button>
+          <button type="button" onClick={() => xmppClientRef.current?.disconnect()}>
+            Disconnect
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setXmppWebSocketUrl("");
+              setXmppJid("");
+              setXmppPassword("");
+              setXmppRoomJid("");
+              setXmppSpaceServiceJid("");
+              setXmppSpaceNode("");
+              setXmppInviteUri("");
+              setXmppNick("");
+            }}
+          >
+            Clear
+          </button>
+        </div>
       </section>
 
       <section className="panelSection events" style={{ margin: 0 }}>
@@ -3446,9 +5552,7 @@ function App() {
             Clear
           </button>
         </div>
-        {events.map((event) => (
-          <span key={event}>{event}</span>
-        ))}
+        <textarea className="eventsLog" readOnly value={events.join("\n")} spellCheck={false} />
       </section>
     </>
   );
@@ -3614,7 +5718,7 @@ function App() {
               className={mainTab === "session" ? "tabButton active" : "tabButton"}
               onClick={() => setMainTab("session")}
             >
-              Session
+              Federation
             </button>
           </div>
           <div className="topActions">
@@ -3635,10 +5739,18 @@ function App() {
             <button className={`iconButton ${callActive ? "active" : ""}`} onClick={toggleCall} aria-label="Toggle call">
               <PhoneCall size={19} />
             </button>
-            <button className={`iconButton ${screenSharing ? "active" : ""}`} onClick={toggleScreenShare} aria-label="Toggle screen share">
-              <ScreenShare size={19} />
+          <button className={`iconButton ${screenSharing ? "active" : ""}`} onClick={toggleScreenShare} aria-label="Toggle screen share">
+            <ScreenShare size={19} />
+          </button>
+            <button
+              className={`iconButton ${chatPaneMode === "split" ? "active" : ""}`}
+              onClick={() => switchChatPaneMode(chatPaneMode === "split" ? "single" : "split")}
+              aria-label="Toggle split chat panes"
+              title="Toggle split chat panes"
+            >
+              <Columns3 size={19} />
             </button>
-            <button className={`iconButton ${mainTab === "session" ? "active" : ""}`} onClick={openSessionTab} aria-label="Open P2P session" title="Open P2P session">
+            <button className={`iconButton ${mainTab === "session" ? "active" : ""}`} onClick={openSessionTab} aria-label="Open federation" title="Open federation">
               <Signal size={19} />
             </button>
           </div>
@@ -3646,14 +5758,14 @@ function App() {
 
         <div className="chatBody">
           {mainTab === "chat" ? (
+            chatPaneMode === "split" ? (
+              renderSplitChatWindows()
+            ) : (
             <>
               <div className="messageList" ref={messageListRef}>
                 {visibleMessages.length === 0 && searchActive ? (
                   <div className="emptyState">No messages matched this search in #{activeLabel}.</div>
-                ) : visibleMessages.map((message) => {
-            const mediaBaseUrl = window.location.origin;
-
-            return (
+                ) : visibleMessages.map((message) => (
             <article
               className={`message ${message.local ? "mine" : ""} ${selectedSearchMessage?.id === message.id ? "focused" : ""}`}
               key={message.id}
@@ -3687,136 +5799,10 @@ function App() {
                     {renderBodyText(message.replyToBody ?? "", `reply-${message.replyToId}`)}
                   </button>
                 )}
-                {(() => {
-                  const imageUrls = extractImageUrls(message.body);
-                  const videoUrls = extractVideoUrls(message.body);
-                  const audioUrls = extractAudioUrls(message.body);
-                  const youtubeUrls = extractYouTubeUrls(message.body);
-                  const tweetUrls = extractTweetUrls(message.body);
-                  const mediaOnly =
-                    hasOnlyLinkTokens(message.body) &&
-                    (imageUrls.length > 0 || videoUrls.length > 0 || audioUrls.length > 0 || youtubeUrls.length > 0);
-
-                  return (
-                    <>
-                      {message.body && !mediaOnly && <>{renderBodyText(message.body, message.id)}</>}
-                      {imageUrls.map((url) => (
-                        <a className="imageEmbed" key={url} href={url} target="_blank" rel="noreferrer">
-                          <img src={url} alt={url} />
-                        </a>
-                      ))}
-                      {videoUrls.map((url) =>
-                        renderVideoEmbed({
-                          baseUrl: mediaBaseUrl,
-                          key: url,
-                          href: url,
-                          url,
-                          className: "videoEmbed",
-                        }),
-                      )}
-                      {audioUrls.map((url) => (
-                        <a className="audioEmbed" key={url} href={url} target="_blank" rel="noreferrer">
-                          <audio controls preload="metadata">
-                            <source src={url} />
-                          </audio>
-                        </a>
-                      ))}
-                      {youtubeUrls.map((url) => {
-                        const videoId = getYouTubeVideoId(url);
-                        if (!videoId) return null;
-                        const isShort = isYouTubeShortUrl(url);
-                        return (
-                          <iframe
-                            key={url}
-                            className={`youtubeEmbed ${isShort ? "youtubeShortEmbed" : ""}`}
-                            src={buildYouTubeEmbedUrl(videoId)}
-                            title={`YouTube video ${videoId}`}
-                            allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-                            allowFullScreen
-                            loading="lazy"
-                          />
-                        );
-                      })}
-                      {tweetUrls.map((url) => (
-                        <TweetEmbed key={url} url={url} />
-                      ))}
-                    </>
-                  );
-                })()}
-                {message.attachment &&
-                  (isImageMimeType(message.attachment.mimeType) ? (
-                    <a
-                      className="imageEmbed attachmentImage"
-                      href={message.attachment.objectUrl}
-                      download={message.attachment.fileName}
-                      onClick={(event) => {
-                        if (!message.attachment?.objectUrl) event.preventDefault();
-                      }}
-                    >
-                      <img src={message.attachment.objectUrl} alt={message.attachment.fileName} />
-                    </a>
-                  ) : isVideoMimeType(message.attachment.mimeType) ? (
-                    renderVideoEmbed({
-                      baseUrl: mediaBaseUrl,
-                      key: message.attachment.fileName,
-                      href: message.attachment.objectUrl!,
-                      url: message.attachment.objectUrl!,
-                      className: "videoEmbed attachmentVideo",
-                      sourceType: message.attachment.mimeType,
-                      download: message.attachment.fileName,
-                      onClick: (event) => {
-                        if (!message.attachment?.objectUrl) event.preventDefault();
-                      },
-                    })
-                  ) : isAudioMimeType(message.attachment.mimeType) ? (
-                    <a
-                      className="audioEmbed attachmentAudio"
-                      href={message.attachment.objectUrl}
-                      download={message.attachment.fileName}
-                      onClick={(event) => {
-                        if (!message.attachment?.objectUrl) event.preventDefault();
-                      }}
-                    >
-                      <audio controls preload="metadata">
-                        <source src={message.attachment.objectUrl} />
-                      </audio>
-                    </a>
-                  ) : (
-                    <a
-                      className="attachmentCard"
-                      href={message.attachment.objectUrl}
-                      download={message.attachment.fileName}
-                      onClick={(event) => {
-                        if (!message.attachment?.objectUrl) event.preventDefault();
-                      }}
-                    >
-                      <Paperclip size={17} />
-                      <span>
-                        <strong>{message.attachment.fileName}</strong>
-                        <small>{formatBytes(message.attachment.size)}</small>
-                      </span>
-                    </a>
-                  ))}
-                {hasAnyReactions(message.reactions) && (
-                  <div className="reactionBar" aria-label="Message reactions">
-                    {Object.entries(message.reactions ?? {}).map(([emoji, authors]) => (
-                      <button
-                        className={authors.includes(name || "Anonymous") ? "active" : ""}
-                        type="button"
-                        key={emoji}
-                        onClick={() => sendReaction(message.id, emoji)}
-                        title={authors.join(", ")}
-                      >
-                        <span>{emoji}</span>
-                        <small>{authors.length}</small>
-                      </button>
-                    ))}
-                  </div>
-                )}
+                {renderMessageContent(message, message.id, window.location.origin)}
               </div>
             </article>
-            );
-                  })}
+            ))}
                 {messageMenuMessageId && messageMenuAnchor && (
                   <div
                     ref={messageMenuRef}
@@ -3959,7 +5945,7 @@ function App() {
               </button>
             </div>
           )}
-          {pendingGif && (
+          {pendingGif && pendingGifChannel === activeChannel && pendingGifPaneIndex === null && (
             <div className="gifComposerPreview" role="group" aria-label="Selected GIF preview">
               <img src={pendingGif.url} alt={pendingGif.label} />
               <div className="gifComposerPreviewMeta">
@@ -3969,7 +5955,11 @@ function App() {
               <button
                 type="button"
                 className="gifComposerPreviewClear"
-                onClick={() => setPendingGif(null)}
+                onClick={() => {
+                  setPendingGif(null);
+                  setPendingGifChannel(activeChannel);
+                  setPendingGifPaneIndex(null);
+                }}
                 aria-label="Remove selected GIF"
               >
                 <X size={13} />
@@ -3980,6 +5970,10 @@ function App() {
             ref={composerInputRef}
             value={draft}
             onChange={(event) => setDraftByChannel((current) => setChannelDraft(current, activeChannel, event.target.value))}
+            onFocus={() => {
+              setComposerTargetChannel(activeChannel);
+              setComposerTargetPaneIndex(null);
+            }}
             placeholder={`Message #${activeLabel}`}
             rows={1}
             onKeyDown={(event) => {
@@ -3989,7 +5983,17 @@ function App() {
             }}
           />
           <div className="composerRight">
-            <button type="button" aria-label="Add attachment" onClick={() => setModal("attachment")}>
+            <button
+              type="button"
+              aria-label="Add attachment"
+              onClick={() => {
+                setComposerTargetChannel(activeChannel);
+                setComposerTargetPaneIndex(null);
+                setPendingAttachmentChannel(activeChannel);
+                setPendingAttachmentPaneIndex(null);
+                setModal("attachment");
+              }}
+            >
               <Paperclip size={20} />
             </button>
             <div className="gifSlot" ref={gifPickerRef}>
@@ -4077,6 +6081,8 @@ function App() {
                 aria-label="GIF"
                 aria-expanded={gifOpen}
                 onClick={() => {
+                  setComposerTargetChannel(activeChannel);
+                  setComposerTargetPaneIndex(null);
                   setGifOpen((open) => !open);
                   setEmojiOpen(false);
                 }}
@@ -4106,6 +6112,8 @@ function App() {
                 aria-label="Emoji"
                 aria-expanded={emojiOpen}
                 onClick={() => {
+                  setComposerTargetChannel(activeChannel);
+                  setComposerTargetPaneIndex(null);
                   setEmojiOpen((open) => !open);
                   setGifOpen(false);
                 }}
@@ -4118,7 +6126,8 @@ function App() {
             </button>
           </div>
         </form>
-            </>
+              </>
+            )
           ) : (
             <div className="sessionTab">
               {sessionPane}
@@ -4137,7 +6146,20 @@ function App() {
             {memberRoster.map((member, index) => (
               <div className="member" key={member}>
                 <span className={index < 2 || connected ? "dot online" : "dot"} />
-                <button type="button" onClick={() => openMemberProfile(member)}>{member}</button>
+                <button type="button" onClick={() => openMemberProfile(member)}>
+                  {member === "You" ? (
+                    <span className="memberAvatar">
+                      {avatarUrl ? <img src={avatarUrl} alt="" /> : member.slice(0, 2).toUpperCase()}
+                    </span>
+                  ) : member === peerName ? (
+                    <span className="memberAvatar">
+                      {peerAvatarUrl ? <img src={peerAvatarUrl} alt="" /> : member.slice(0, 2).toUpperCase()}
+                    </span>
+                  ) : (
+                    <span className="memberAvatar">{member.slice(0, 2).toUpperCase()}</span>
+                  )}
+                  <span>{member}</span>
+                </button>
               </div>
             ))}
           </div>
@@ -4157,19 +6179,97 @@ function App() {
             Screen share {screenSharing ? "live" : "off"}
           </div>
           <div className="mediaState">
+            <span className={cameraActive ? "dot online" : "dot"} />
+            Camera {cameraActive ? "live" : "off"}
+          </div>
+          <div className="mediaState">
             <span className={remoteMediaActive ? "dot online" : "dot"} />
             Remote media {remoteMediaActive ? "receiving" : "idle"}
           </div>
-          <div className="mediaState">
-            <span className={peerCallActive ? "dot online" : "dot"} />
-            Peer mic {peerCallActive ? (peerMicMuted ? "muted" : "live") : "off"}
+      <div className="mediaState">
+        <span className={peerCallActive ? "dot online" : "dot"} />
+        Peer mic {peerCallActive ? (peerMicMuted ? "muted" : "live") : "off"}
+      </div>
+      <div className="mediaState">
+        <span className={peerCameraActive ? "dot online" : "dot"} />
+        Peer camera {peerCameraActive ? "live" : "off"}
+      </div>
+      <div className="mediaState">
+        <span className={peerScreenSharing ? "dot online" : "dot"} />
+        Peer screen share {peerScreenSharing ? "live" : "off"}
+      </div>
+          <div className="mediaActions">
+            <button type="button" className={`secondaryButton compact ${micMuted ? "active" : ""}`} onClick={toggleMic}>
+              {micMuted ? <MicOff size={13} /> : <Mic size={13} />}
+              {micMuted ? "Unmute" : "Mute"}
+            </button>
+            <button type="button" className={`secondaryButton compact ${callActive ? "active" : ""}`} onClick={toggleCall}>
+              <PhoneCall size={13} />
+              {callActive ? "End call" : "Start call"}
+            </button>
+            <button
+              type="button"
+              className={`secondaryButton compact ${screenSharing ? "active" : ""}`}
+              onClick={toggleScreenShare}
+            >
+              <ScreenShare size={13} />
+              {screenSharing ? "Stop share" : "Share screen"}
+            </button>
+            <button
+              type="button"
+              className={`secondaryButton compact ${cameraActive ? "active" : ""}`}
+              onClick={toggleCamera}
+            >
+              {cameraActive ? <VideoOff size={13} /> : <Video size={13} />}
+              {cameraActive ? "Stop camera" : "Start camera"}
+            </button>
           </div>
-          <div className="mediaState">
-            <span className={peerScreenSharing ? "dot online" : "dot"} />
-            Peer screen share {peerScreenSharing ? "live" : "off"}
+          <div className="paneAudioMeters">
+            <div className="paneAudioMeter">
+              <span>Mic</span>
+              <div className="paneAudioMeterBar">
+                <div className="paneAudioMeterFill" style={{ width: `${callActive ? localAudioLevel : 0}%` }} />
+              </div>
+            </div>
+            <div className="paneAudioMeter">
+              <span>Peer</span>
+              <div className="paneAudioMeterBar">
+                <div className="paneAudioMeterFill peer" style={{ width: `${peerCallActive ? peerAudioLevel : 0}%` }} />
+              </div>
+            </div>
           </div>
-          {(screenSharing || remoteVideoActive) && (
+          <div className="voiceMeshCompact">
+            <div className="voiceMeshCompactHeader">
+              <Volume2 size={13} />
+              <span>Voice mesh</span>
+              <small>{activeVoiceRoom ? `Active: ${activeVoiceRoom}` : "Idle"}</small>
+            </div>
+            <div className="voiceMeshCompactRooms">
+              {voiceRooms.map((room) => (
+                <button
+                  key={room}
+                  type="button"
+                  className={`secondaryButton compact ${activeVoiceRoom === room ? "active" : ""}`}
+                  onClick={() => joinVoiceRoom(room)}
+                >
+                  {room}
+                </button>
+              ))}
+            </div>
+            {activeVoiceRoom && (
+              <button type="button" className="secondaryButton compact" onClick={() => joinVoiceRoom(activeVoiceRoom)}>
+                Leave room
+              </button>
+            )}
+          </div>
+          {(cameraActive || screenSharing || remoteVideoActive) && (
             <div className="videoGrid">
+              {cameraActive && (
+                <figure>
+                  <video ref={localCameraVideoRef} autoPlay muted playsInline />
+                  <figcaption>Local camera</figcaption>
+                </figure>
+              )}
               {screenSharing && (
                 <figure>
                   <video ref={localScreenVideoRef} autoPlay muted playsInline />
@@ -4179,7 +6279,7 @@ function App() {
               {remoteVideoActive && (
                 <figure>
                   <video ref={remoteVideoRef} autoPlay playsInline />
-                  <figcaption>Remote screen</figcaption>
+                  <figcaption>{peerCameraActive ? "Peer camera" : peerScreenSharing ? "Peer screen share" : "Remote video"}</figcaption>
                 </figure>
               )}
             </div>
@@ -4208,7 +6308,7 @@ function App() {
                 {modal === "delete-message" && "Delete Message"}
                 {modal === "search" && "Search Messages"}
                 {modal === "settings" && "User Settings"}
-                {modal === "attachment" && "Attach File"}
+                {modal === "attachment" && `Attach File to ${pendingAttachmentTargetLabel}`}
                 {modal === "clear-history" && "Clear History"}
               </strong>
               <button className="iconButton" onClick={closeModal} aria-label="Close dialog">
@@ -4346,8 +6446,180 @@ function App() {
             {modal === "member" && selectedMember && (
               <div className="modalBody">
                 <p className="modalCopy">
-                  Local profile for <strong>{selectedMember}</strong>.
+                  Profile for <strong>{selectedMember}</strong>.
                 </p>
+                <div
+                  className="profileCard"
+                  style={{
+                    boxShadow:
+                      selectedMember === "You"
+                        ? `inset 4px 0 0 ${accentColor}`
+                        : selectedMember === peerName
+                          ? `inset 4px 0 0 ${peerAccentColor}`
+                          : "inset 4px 0 0 #2d3139",
+                  }}
+                >
+                  <div className="profileBanner">
+                    {selectedMember === "You" ? (
+                      bannerUrl ? <img src={bannerUrl} alt="" /> : null
+                    ) : selectedMember === peerName ? (
+                      peerBannerUrl ? <img src={peerBannerUrl} alt="" /> : null
+                    ) : null}
+                  </div>
+                  <div className="profileHeader">
+                    <div
+                      className={`profileAvatarWrap ${
+                        selectedMember === "You"
+                          ? avatarAnimated
+                            ? "animated"
+                            : ""
+                          : selectedMember === peerName && peerAvatarAnimated
+                            ? "animated"
+                            : ""
+                      }`}
+                    >
+                      {selectedMember === "You" ? (
+                        avatarUrl ? (
+                          <img className="profileAvatar" src={avatarUrl} alt={selectedMember} />
+                        ) : (
+                          <div className="profileAvatar profileAvatarFallback" aria-hidden="true">
+                            {getAvatarFallback(name || "Anonymous", name || "Anonymous")}
+                          </div>
+                        )
+                      ) : selectedMember === peerName ? (
+                        peerAvatarUrl ? (
+                          <img className="profileAvatar" src={peerAvatarUrl} alt={selectedMember} />
+                        ) : (
+                          <div className="profileAvatar profileAvatarFallback" aria-hidden="true">
+                            {getAvatarFallback(peerName, peerName)}
+                          </div>
+                        )
+                      ) : (
+                        <div className="profileAvatar profileAvatarFallback" aria-hidden="true">
+                          {getAvatarFallback(selectedMember, selectedMember)}
+                        </div>
+                      )}
+                      {selectedMember === "You" ? (
+                        avatarFrameUrl ? <img className="profileAvatarFrame" src={avatarFrameUrl} alt="" aria-hidden="true" /> : null
+                      ) : selectedMember === peerName ? (
+                        peerAvatarFrameUrl ? <img className="profileAvatarFrame" src={peerAvatarFrameUrl} alt="" aria-hidden="true" /> : null
+                      ) : null}
+                    </div>
+                    <div className="profileMeta">
+                      <strong>{selectedMember}</strong>
+                      <span>
+                        {selectedMember === "You" ? presence : selectedMember === peerName ? peerPresence : "local profile"}
+                      </span>
+                      <span>
+                        {selectedMember === "You" ? headline || "No headline set" : selectedMember === peerName ? peerHeadline || "No headline set" : "Profile card"}
+                      </span>
+                      <span>
+                        {selectedMember === "You" ? statusMessage || "No custom status set" : selectedMember === peerName ? peerStatusMessage || "No custom status set" : "Profile card"}
+                      </span>
+                      <span>
+                        {selectedMember === "You" ? (
+                          website.trim() ? (
+                            <a href={website} target="_blank" rel="noreferrer">
+                              {website}
+                            </a>
+                          ) : (
+                            "No website set"
+                          )
+                        ) : selectedMember === peerName ? (
+                          peerWebsite.trim() ? (
+                            <a href={peerWebsite} target="_blank" rel="noreferrer">
+                              {peerWebsite}
+                            </a>
+                          ) : (
+                            "No website set"
+                          )
+                        ) : (
+                          "Profile card"
+                        )}
+                      </span>
+                      <span>
+                        {selectedMember === "You"
+                          ? location || "No location set"
+                          : selectedMember === peerName
+                            ? peerLocation || "No location set"
+                            : "Profile card"}
+                      </span>
+                      <span>
+                        {selectedMember === "You"
+                          ? timezone || "No timezone set"
+                          : selectedMember === peerName
+                            ? peerTimezone || "No timezone set"
+                            : "Profile card"}
+                      </span>
+                      <span>
+                        {selectedMember === "You"
+                          ? birthday || "No birthday set"
+                          : selectedMember === peerName
+                            ? peerBirthday || "No birthday set"
+                            : "Profile card"}
+                      </span>
+                      <span>
+                        {selectedMember === "You"
+                          ? company || "No company set"
+                          : selectedMember === peerName
+                            ? peerCompany || "No company set"
+                            : "Profile card"}
+                      </span>
+                      <span>
+                        {selectedMember === "You"
+                          ? school || "No school set"
+                          : selectedMember === peerName
+                            ? peerSchool || "No school set"
+                            : "Profile card"}
+                      </span>
+                      <span>
+                        {selectedMember === "You"
+                          ? major || "No major set"
+                          : selectedMember === peerName
+                            ? peerMajor || "No major set"
+                            : "Profile card"}
+                      </span>
+                      <span>
+                        {selectedMember === "You" ? pronouns || "Pronouns not set" : selectedMember === peerName ? peerPronouns || "Pronouns not set" : "Profile card"}
+                      </span>
+                      <span>
+                        {selectedMember === "You"
+                          ? pronunciation || "No pronunciation set"
+                          : selectedMember === peerName
+                            ? peerPronunciation || "No pronunciation set"
+                            : "Profile card"}
+                      </span>
+                      <span>
+                        {selectedMember === "You"
+                          ? hobbies || "No hobbies set"
+                          : selectedMember === peerName
+                            ? peerHobbies || "No hobbies set"
+                            : "Profile card"}
+                      </span>
+                      <span>
+                        {selectedMember === "You"
+                          ? languages || "No languages set"
+                          : selectedMember === peerName
+                            ? peerLanguages || "No languages set"
+                            : "Profile card"}
+                      </span>
+                      <span>
+                        {selectedMember === "You" ? about || "No profile note set" : selectedMember === peerName ? peerAbout || "No profile note set" : "Profile card"}
+                      </span>
+                      <span>
+                        {selectedMember === "You"
+                          ? avatarAnimated
+                            ? "Animated avatar enabled"
+                            : "Static avatar"
+                          : selectedMember === peerName
+                            ? peerAvatarAnimated
+                              ? "Animated avatar enabled"
+                              : "Static avatar"
+                            : "Profile card"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
                 <div className="modalActions">
                   <button
                     className="secondaryButton"
@@ -4443,23 +6715,162 @@ function App() {
 
             {modal === "settings" && (
               <div className="modalBody">
-                <label>
-                  Display name
-                  <input value={name} onChange={(event) => setName(event.target.value)} autoFocus />
-                </label>
-                <label>
-                  Presence
-                  <input value={presence} onChange={(event) => setPresence(event.target.value)} />
-                </label>
-                <label>
-                  ICE servers
-                  <textarea
-                    className="settingsTextarea"
-                    value={iceServersText}
-                    onChange={(event) => setIceServersText(event.target.value)}
-                    spellCheck={false}
+                <details className="collapsibleSection" open>
+                  <summary>Profile</summary>
+                  <label>
+                    Display name
+                    <input value={name} onChange={(event) => setName(event.target.value)} autoFocus />
+                  </label>
+                  <label>
+                    Presence
+                    <input value={presence} onChange={(event) => setPresence(event.target.value)} />
+                  </label>
+                  <label>
+                    Pronouns
+                    <input value={pronouns} onChange={(event) => setPronouns(event.target.value)} placeholder="they/them" />
+                  </label>
+                  <label>
+                    Pronunciation
+                    <input value={pronunciation} onChange={(event) => setPronunciation(event.target.value)} placeholder="how to say your name" />
+                  </label>
+                  <label>
+                    Hobbies
+                    <input value={hobbies} onChange={(event) => setHobbies(event.target.value)} placeholder="music, hiking, coffee" />
+                  </label>
+                  <label>
+                    Languages
+                    <input value={languages} onChange={(event) => setLanguages(event.target.value)} placeholder="English, French" />
+                  </label>
+                  <label>
+                    Accent color
+                    <input type="color" value={accentColor} onChange={(event) => setAccentColor(event.target.value)} />
+                  </label>
+                  <label>
+                    Status
+                    <input value={statusMessage} onChange={(event) => setStatusMessage(event.target.value)} placeholder="Working on the build" />
+                  </label>
+                  <label>
+                    Website
+                    <input value={website} onChange={(event) => setWebsite(event.target.value)} placeholder="https://example.com" />
+                  </label>
+                  <label>
+                    Location
+                    <input value={location} onChange={(event) => setLocation(event.target.value)} placeholder="San Francisco, CA" />
+                  </label>
+                  <label>
+                    Headline
+                    <input value={headline} onChange={(event) => setHeadline(event.target.value)} placeholder="Builder, ops, night shift" />
+                  </label>
+                  <label>
+                    Timezone
+                    <input value={timezone} onChange={(event) => setTimezone(event.target.value)} placeholder="UTC-4" />
+                  </label>
+                  <label>
+                    Birthday
+                    <input value={birthday} onChange={(event) => setBirthday(event.target.value)} placeholder="Jan 1" />
+                  </label>
+                  <label>
+                    Company
+                    <input value={company} onChange={(event) => setCompany(event.target.value)} placeholder="Relayless" />
+                  </label>
+                  <label>
+                    School
+                    <input value={school} onChange={(event) => setSchool(event.target.value)} placeholder="University of..." />
+                  </label>
+                  <label>
+                    Major
+                    <input value={major} onChange={(event) => setMajor(event.target.value)} placeholder="Computer Science" />
+                  </label>
+                  <label>
+                    About
+                    <textarea value={about} onChange={(event) => setAbout(event.target.value)} placeholder="A short profile note" />
+                  </label>
+                </details>
+                <details className="collapsibleSection">
+                  <summary>Avatar art</summary>
+                  <label>
+                    Profile picture URL
+                    <input value={avatarUrl} onChange={(event) => setAvatarUrl(event.target.value)} placeholder="https://..." />
+                  </label>
+                  <input
+                    ref={avatarUploadRef}
+                    type="file"
+                    accept="image/*"
+                    hidden
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void uploadProfileArt(file, setAvatarUrl, "Avatar");
+                      event.currentTarget.value = "";
+                    }}
                   />
-                </label>
+                  <label>
+                    Profile banner URL
+                    <input value={bannerUrl} onChange={(event) => setBannerUrl(event.target.value)} placeholder="https://..." />
+                  </label>
+                  <input
+                    ref={bannerUploadRef}
+                    type="file"
+                    accept="image/*"
+                    hidden
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void uploadProfileArt(file, setBannerUrl, "Banner");
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                  <label>
+                    Avatar frame URL
+                    <input value={avatarFrameUrl} onChange={(event) => setAvatarFrameUrl(event.target.value)} placeholder="https://..." />
+                  </label>
+                  <input
+                    ref={frameUploadRef}
+                    type="file"
+                    accept="image/*"
+                    hidden
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void uploadProfileArt(file, setAvatarFrameUrl, "Avatar frame");
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                  <label className="toggleRow">
+                    <input type="checkbox" checked={avatarAnimated} onChange={(event) => setAvatarAnimated(event.target.checked)} />
+                    <span>Animated avatar</span>
+                  </label>
+                  <div className="signalActions">
+                    <button type="button" onClick={() => avatarUploadRef.current?.click()}>
+                      Upload avatar
+                    </button>
+                    <button type="button" onClick={() => bannerUploadRef.current?.click()}>
+                      Upload banner
+                    </button>
+                    <button type="button" onClick={() => frameUploadRef.current?.click()}>
+                      Upload frame
+                    </button>
+                  </div>
+                  <div className="signalActions">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void shareProfile();
+                      }}
+                    >
+                      Share profile
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAvatarUrl("");
+                        setAvatarFrameUrl("");
+                        setBannerUrl("");
+                        setAvatarAnimated(false);
+                      }}
+                    >
+                      Clear profile art
+                    </button>
+                  </div>
+                </details>
+                <p className="modalCopy">XMPP connection settings are configured in the Federation tab.</p>
                 <input
                   ref={backupInputRef}
                   type="file"
@@ -4478,6 +6889,7 @@ function App() {
 
             {modal === "attachment" && (
               <div className="modalBody">
+                <p className="modalCopy">Sending to {pendingAttachmentTargetLabel}.</p>
                 <input ref={fileInputRef} type="file" onChange={(event) => loadSelectedAttachment(event.target.files)} />
                 <button className="primaryButton" type="button" onClick={() => fileInputRef.current?.click()}>
                   <Upload size={17} />

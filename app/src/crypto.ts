@@ -96,10 +96,29 @@ export type PlainWireProfileSync = Omit<WireMessage, "iv" | "ciphertext" | "type
   type: "profile-sync";
   name: string;
   presence: string;
+  about?: string;
+  pronouns?: string;
+  pronunciation?: string;
+  hobbies?: string;
+  languages?: string;
+  accentColor?: string;
+  statusMessage?: string;
+  website?: string;
+  location?: string;
+  headline?: string;
+  timezone?: string;
+  birthday?: string;
+  company?: string;
+  school?: string;
+  major?: string;
   notificationsMuted?: boolean;
   membersOpen?: boolean;
   activeServer?: string;
   activeChannel?: string;
+  avatarUrl?: string;
+  avatarFrameUrl?: string;
+  bannerUrl?: string;
+  avatarAnimated?: boolean;
 };
 
 export type PlainWireSessionControl = Omit<WireMessage, "iv" | "ciphertext" | "type"> & {
@@ -112,6 +131,7 @@ export type PlainWireMediaSync = Omit<WireMessage, "iv" | "ciphertext" | "type">
   callActive: boolean;
   screenSharing: boolean;
   micMuted: boolean;
+  cameraActive: boolean;
 };
 
 export type PlainWireTypingSync = Omit<WireMessage, "iv" | "ciphertext" | "type"> & {
