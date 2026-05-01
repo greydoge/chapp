@@ -356,7 +356,9 @@ function RelatedTweetBlock({
         </button>
       </div>
       {tweet.text.trim() && <p>{renderTweetText(tweet.text, kind)}</p>}
-      {tweet.media.length > 0 && <div className="tweetMediaGrid">{renderTweetMedia(tweet.media, kind)}</div>}
+      {tweet.media.length > 0 && (
+        <div className={`tweetMediaGrid count-${Math.min(tweet.media.length, 4)}`}>{renderTweetMedia(tweet.media, kind)}</div>
+      )}
     </div>
   );
 }
@@ -481,7 +483,7 @@ function renderVideoEmbed({
   );
 }
 
-function TweetEmbed({ url }: { url: string }) {
+function TweetEmbed({ url, onOpenImage }: { url: string; onOpenImage: (url: string, alt: string) => void }) {
   const [preview, setPreview] = useState<ResolvedTweetPreview>(() => buildFallbackTweetPreview(url)!);
   const [avatarBroken, setAvatarBroken] = useState(false);
   const [copiedLink, setCopiedLink] = useState<string | null>(null);
@@ -524,24 +526,31 @@ function TweetEmbed({ url }: { url: string }) {
       ),
     );
   const renderTweetMedia = (media: ResolvedTweetPreview["media"], prefix: string) =>
-    media.map((item, index) =>
+    media.slice(0, 4).map((item, index) => {
+      const hiddenCount = media.length - 4;
+      const showHiddenCount = hiddenCount > 0 && index === 3;
+      return (
       item.type === "image" ? (
         <a
           key={`${prefix}-image-${item.url}-${index}`}
-          className="tweetMediaLink"
+          className={`tweetMediaLink ${showHiddenCount ? "hasMore" : ""}`}
           href={item.url}
-          target="_blank"
-          rel="noreferrer"
+          onClick={(event) => {
+            event.preventDefault();
+            onOpenImage(item.url, "Tweet media");
+          }}
         >
           <img className="tweetImage" src={item.url} alt="Tweet media" loading="lazy" />
+          {showHiddenCount && <span className="tweetMediaMore">+{hiddenCount}</span>}
         </a>
       ) : (
-        <TweetVideoMedia
-          key={`${prefix}-video-${item.url}-${index}`}
-          item={item}
-        />
-      ),
-    );
+        <div className={showHiddenCount ? "tweetMediaVideoTile hasMore" : "tweetMediaVideoTile"} key={`${prefix}-video-${item.url}-${index}`}>
+          <TweetVideoMedia item={item} />
+          {showHiddenCount && <span className="tweetMediaMore">+{hiddenCount}</span>}
+        </div>
+      )
+      );
+    });
   const copyLink = (value: string) => {
     void (async () => {
       try {
@@ -670,7 +679,7 @@ function TweetEmbed({ url }: { url: string }) {
         </div>
       )}
       {preview.media.length > 0 && (
-        <div className="tweetMediaGrid">{renderTweetMedia(preview.media, "tweet")}</div>
+        <div className={`tweetMediaGrid count-${Math.min(preview.media.length, 4)}`}>{renderTweetMedia(preview.media, "tweet")}</div>
       )}
     </article>
   );
@@ -730,6 +739,22 @@ const DEFAULT_CHANNELS = [
 const DEFAULT_SERVERS = ["Relayless", "Peer Lab", "E2E Ops"];
 const DEFAULT_NAME = "LocalUser";
 const DEFAULT_PRESENCE = "xmpp online";
+const DEFAULT_SERVER_SUBTITLE = "self-hosted guild";
+const APP_THEMES = [
+  { id: "midnight", label: "Midnight" },
+  { id: "maximum-black", label: "Maximum Black" },
+  { id: "light", label: "White" },
+  { id: "maximum-white", label: "Maximum White" },
+  { id: "ocean", label: "Ocean" },
+  { id: "forest", label: "Forest" },
+  { id: "rose", label: "Rose" },
+  { id: "amber", label: "Amber" },
+  { id: "honey", label: "Honey" },
+  { id: "parchment", label: "Parchment" },
+  { id: "copper", label: "Copper" },
+  { id: "grape", label: "Grape" },
+] as const;
+type AppTheme = (typeof APP_THEMES)[number]["id"];
 
 const voiceRooms = ["war room", "release desk", "pairing"];
 const baseMembers = ["You", "Ada", "Linus", "Grace", "Katherine"];
@@ -751,9 +776,17 @@ type AttachmentTransfer = {
   total: number;
 };
 
+type XmppRoomOccupant = {
+  nick: string;
+  role?: string;
+  affiliation?: string;
+  self?: boolean;
+};
+
 type StoredSettings = {
   activeServer?: string;
   activeChannelsByServer?: Record<string, string>;
+  serverSubtitles?: Record<string, string>;
   activeVoiceRoom?: string | null;
   channels?: typeof DEFAULT_CHANNELS;
   xmppWebSocketUrl?: string;
@@ -774,6 +807,7 @@ type StoredSettings = {
   hobbies?: string;
   languages?: string;
   accentColor?: string;
+  appTheme?: AppTheme;
   statusMessage?: string;
   website?: string;
   location?: string;
@@ -786,6 +820,7 @@ type StoredSettings = {
   recentEmojis?: string[];
   newChannelName?: string;
   newServerName?: string;
+  newServerSubtitle?: string;
   draftByChannel?: ChannelDrafts;
   editDraftByMessage?: MessageEditDrafts;
   replyTargetByChannel?: ReplyTargets;
@@ -890,12 +925,18 @@ function loadSettings(): StoredSettings {
   }
 }
 
+function normalizeAppTheme(value?: string): AppTheme {
+  return APP_THEMES.some((theme) => theme.id === value) ? (value as AppTheme) : "midnight";
+}
+
 const storedSettings = typeof localStorage === "undefined" ? {} : loadSettings();
 
 function App() {
   const [servers, setServers] = useState(storedSettings.servers ?? DEFAULT_SERVERS);
   const [activeServer, setActiveServer] = useState(storedSettings.activeServer ?? storedSettings.servers?.[0] ?? DEFAULT_SERVERS[0]);
+  const [serverSubtitles, setServerSubtitles] = useState<Record<string, string>>(storedSettings.serverSubtitles ?? {});
   const [newServerName, setNewServerName] = useState(storedSettings.newServerName ?? "");
+  const [newServerSubtitle, setNewServerSubtitle] = useState(storedSettings.newServerSubtitle ?? "");
   const [channels, setChannels] = useState(storedSettings.channels ?? DEFAULT_CHANNELS);
   const [xmppWebSocketUrl, setXmppWebSocketUrl] = useState(storedSettings.xmppWebSocketUrl ?? "");
   const [xmppJid, setXmppJid] = useState(storedSettings.xmppJid ?? "");
@@ -925,6 +966,7 @@ function App() {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const [selectedMember, setSelectedMember] = useState<string | null>(null);
+  const [lightboxImage, setLightboxImage] = useState<{ url: string; alt: string } | null>(null);
   const [activeChannel, setActiveChannel] = useState(storedSettings.channels?.[0]?.id ?? "lobby");
   const [activeChannelsByServer, setActiveChannelsByServer] = useState<Record<string, string>>(
     storedSettings.activeChannelsByServer ?? {
@@ -1012,6 +1054,7 @@ function App() {
   const [hobbies, setHobbies] = useState(storedSettings.hobbies ?? "");
   const [languages, setLanguages] = useState(storedSettings.languages ?? "");
   const [accentColor, setAccentColor] = useState(storedSettings.accentColor ?? "#7c8cff");
+  const [appTheme, setAppTheme] = useState<AppTheme>(() => normalizeAppTheme(storedSettings.appTheme));
   const [statusMessage, setStatusMessage] = useState(storedSettings.statusMessage ?? "");
   const [website, setWebsite] = useState(storedSettings.website ?? "");
   const [location, setLocation] = useState(storedSettings.location ?? "");
@@ -1051,6 +1094,8 @@ function App() {
   const [peerActiveServer, setPeerActiveServer] = useState("unknown");
   const [peerActiveChannel, setPeerActiveChannel] = useState("unknown");
   const [peerTypingChannel, setPeerTypingChannel] = useState<string | null>(null);
+  const [xmppRoomOccupants, setXmppRoomOccupants] = useState<Record<string, XmppRoomOccupant>>({});
+  const [xmppSelfNick, setXmppSelfNick] = useState("");
   const [iceServersText, setIceServersText] = useState(storedSettings.iceServersText ?? formatIceServers(DEFAULT_ICE_SERVERS));
   const [xmppStatus, setXmppStatus] = useState("disconnected");
   const prevXmppStatusRef = useRef(xmppStatus);
@@ -1066,10 +1111,19 @@ function App() {
   const [recentEmojis, setRecentEmojis] = useState<string[]>(storedSettings.recentEmojis ?? defaultRecentEmojis);
   const [gifFavorites, setGifFavorites] = useState<string[]>(storedSettings.gifFavorites ?? []);
   const [cameraActive, setCameraActive] = useState(false);
+  const activeServerSubtitle = serverSubtitles[activeServer]?.trim() || DEFAULT_SERVER_SUBTITLE;
   const memberRoster = useMemo(() => {
+    const roomMembers = Object.values(xmppRoomOccupants)
+      .sort((left, right) => Number(Boolean(right.self)) - Number(Boolean(left.self)) || left.nick.localeCompare(right.nick))
+      .map((occupant) => (occupant.self ? "You" : occupant.nick));
+
+    if (roomMembers.length > 0) {
+      return Array.from(new Set(roomMembers));
+    }
+
     if (!peerName.trim() || baseMembers.includes(peerName)) return baseMembers;
     return [baseMembers[0], peerName, ...baseMembers.slice(1)];
-  }, [peerName]);
+  }, [peerName, xmppRoomOccupants]);
   const draft = getChannelDraft(draftByChannel, activeChannel);
   const replyToMessageId = getReplyTarget(replyTargetByChannel, activeChannel);
   const focusedComposerChannel = composerTargetChannel || activeChannel;
@@ -1080,6 +1134,8 @@ function App() {
   const xmppRoomRef = useRef<string | null>(null);
   const xmppSpaceRef = useRef<{ serviceJid: string; node: string } | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const channelScrollPositionsRef = useRef<Record<string, number>>({});
+  const restoredScrollChannelRef = useRef<string | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const paneComposerInputRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   const paneMessageListRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -1239,10 +1295,15 @@ function App() {
   }, [draft]);
 
   useEffect(() => {
+    document.documentElement.dataset.theme = appTheme;
+  }, [appTheme]);
+
+  useEffect(() => {
     const timeout = window.setTimeout(() => {
       const settings: StoredSettings = {
         activeServer,
         activeChannelsByServer,
+        serverSubtitles,
         channels,
         xmppWebSocketUrl,
         xmppJid,
@@ -1254,6 +1315,7 @@ function App() {
         editDraftByMessage,
         newChannelName,
         newServerName,
+        newServerSubtitle,
         replyTargetByChannel,
         activeVoiceRoom,
         iceServersText,
@@ -1284,6 +1346,7 @@ function App() {
         hobbies,
         languages,
         accentColor,
+        appTheme,
         statusMessage,
         website,
         location,
@@ -1304,10 +1367,12 @@ function App() {
     activeChannelsByServer,
     activeServer,
     activeVoiceRoom,
+    serverSubtitles,
     draftByChannel,
     editDraftByMessage,
     newChannelName,
     newServerName,
+    newServerSubtitle,
     replyTargetByChannel,
     searchQuery,
     searchIndex,
@@ -1344,6 +1409,7 @@ function App() {
     hobbies,
     languages,
     accentColor,
+    appTheme,
     statusMessage,
     website,
     location,
@@ -1427,6 +1493,8 @@ function App() {
     xmppClientRef.current = null;
     xmppRoomRef.current = null;
     xmppSpaceRef.current = null;
+    setXmppRoomOccupants({});
+    setXmppSelfNick("");
 
     if (!websocketUrl || !jid || !password || (!room && (!spaceServiceJid || !spaceNode))) {
       setXmppStatus("disabled");
@@ -1505,6 +1573,54 @@ function App() {
       }
     });
 
+    const getPresenceRoom = (presence: { from?: string }) => presence.from?.split("/")[0] ?? "";
+    const getPresenceNick = (presence: { from?: string }) => {
+      const [, resource = ""] = presence.from?.split("/", 2) ?? [];
+      return decodeURIComponent(resource).trim();
+    };
+    const isSelfPresence = (presence: { muc?: { statusCodes?: Array<string | number> } }) =>
+      (presence.muc?.statusCodes ?? []).map(String).includes("110");
+
+    client.on("muc:available", (presence) => {
+      if (cancelled || !xmppRoomRef.current || getPresenceRoom(presence) !== xmppRoomRef.current) return;
+
+      const nick = getPresenceNick(presence);
+      if (!nick) return;
+
+      const self = isSelfPresence(presence);
+      if (self) setXmppSelfNick(nick);
+
+      setXmppRoomOccupants((current) => ({
+        ...current,
+        [nick]: {
+          nick,
+          role: presence.muc?.role,
+          affiliation: presence.muc?.affiliation,
+          self,
+        },
+      }));
+    });
+
+    client.on("muc:unavailable", (presence) => {
+      if (cancelled || !xmppRoomRef.current || getPresenceRoom(presence) !== xmppRoomRef.current) return;
+
+      const nick = getPresenceNick(presence);
+      if (!nick) return;
+
+      const self = isSelfPresence(presence);
+      if (self) {
+        setXmppSelfNick("");
+        setXmppRoomOccupants({});
+        return;
+      }
+
+      setXmppRoomOccupants((current) => {
+        const next = { ...current };
+        delete next[nick];
+        return next;
+      });
+    });
+
     client.on("pubsub:published", (msg) => {
       if (cancelled || !xmppSpaceRef.current) return;
       const published = msg.pubsub.items?.published ?? [];
@@ -1572,9 +1688,21 @@ function App() {
 
   useEffect(() => {
     const list = messageListRef.current;
-    if (!list || !followLatest) return;
-    list.scrollTop = list.scrollHeight;
-  }, [activeChannel, followLatest, visibleMessages]);
+    if (!list) return;
+
+    if (restoredScrollChannelRef.current !== activeChannel) {
+      restoredScrollChannelRef.current = activeChannel;
+      const savedScrollTop = channelScrollPositionsRef.current[activeChannel];
+      requestAnimationFrame(() => {
+        const nextScrollTop = savedScrollTop ?? list.scrollHeight;
+        list.scrollTop = Math.min(nextScrollTop, Math.max(0, list.scrollHeight - list.clientHeight));
+        setFollowLatest(isNearBottom(list.scrollTop, list.clientHeight, list.scrollHeight));
+      });
+      return;
+    }
+
+    if (followLatest) list.scrollTop = list.scrollHeight;
+  }, [activeChannel, followLatest, visibleMessages.length]);
 
   useEffect(() => {
     if (chatPaneMode !== "split") return;
@@ -1690,6 +1818,7 @@ function App() {
     const listElement = list;
 
     function syncFollowState() {
+      channelScrollPositionsRef.current[activeChannel] = listElement.scrollTop;
       setFollowLatest(isNearBottom(listElement.scrollTop, listElement.clientHeight, listElement.scrollHeight));
     }
 
@@ -2200,6 +2329,7 @@ function App() {
     setFollowLatest(true);
     requestAnimationFrame(() => {
       list.scrollTop = list.scrollHeight;
+      channelScrollPositionsRef.current[activeChannel] = list.scrollTop;
     });
   }
 
@@ -2288,6 +2418,7 @@ function App() {
     return {
       activeServer,
       activeChannelsByServer,
+      serverSubtitles,
       activeVoiceRoom,
       channels,
       iceServersText,
@@ -2301,6 +2432,7 @@ function App() {
       hobbies,
       languages,
       accentColor,
+      appTheme,
       statusMessage,
       website,
       location,
@@ -2321,6 +2453,7 @@ function App() {
       events,
       newChannelName,
       newServerName,
+      newServerSubtitle,
       draftByChannel,
       editDraftByMessage,
       replyTargetByChannel,
@@ -2372,6 +2505,7 @@ function App() {
     );
 
     setServers(nextServers);
+    setServerSubtitles(settings.serverSubtitles ?? {});
     setChannels(nextChannels);
     setActiveServer(nextActiveServer);
     setActiveChannelsByServer({
@@ -2415,6 +2549,7 @@ function App() {
     setSchool(settings.school ?? "");
     setMajor(settings.major ?? "");
     setAccentColor(settings.accentColor ?? "#7c8cff");
+    setAppTheme(normalizeAppTheme(settings.appTheme));
     setStatusMessage(settings.statusMessage ?? "");
     setWebsite(settings.website ?? "");
     setLocation(settings.location ?? "");
@@ -2442,6 +2577,7 @@ function App() {
     setEvents(settings.events?.length ? settings.events.slice(0, 200) : ["Ready for XMPP federation."]);
     setNewChannelName(settings.newChannelName ?? "");
     setNewServerName(settings.newServerName ?? "");
+    setNewServerSubtitle(settings.newServerSubtitle ?? "");
     setDraftByChannel(settings.draftByChannel ?? {});
     setEditDraftByMessage(settings.editDraftByMessage ?? {});
     setReplyTargetByChannel(settings.replyTargetByChannel ?? {});
@@ -2736,7 +2872,7 @@ function App() {
   function joinVoiceRoom(room: string) {
     setActiveVoiceRoom((current) => {
       const nextRoom = current === room ? null : room;
-      log(nextRoom ? `Joined voice room: ${nextRoom}.` : "Left voice mesh.");
+      log(nextRoom ? `Joined voice channel: ${nextRoom}.` : "Left voice channel.");
       void sendVoiceSync(nextRoom);
       return nextRoom;
     });
@@ -2755,8 +2891,11 @@ function App() {
   }
 
   function switchChannel(channelId: string) {
+    const list = messageListRef.current;
+    if (list) {
+      channelScrollPositionsRef.current[activeChannel] = list.scrollTop;
+    }
     setActiveChannel(channelId);
-    setFollowLatest(true);
     setEmojiOpen(false);
     setReactionPickerMessageId(null);
     setMessageMenuMessageId(null);
@@ -2829,11 +2968,13 @@ function App() {
 
   function openCreateServer() {
     setNewServerName("");
+    setNewServerSubtitle(DEFAULT_SERVER_SUBTITLE);
     setModal("server");
   }
 
   function openRenameServer() {
     setNewServerName(activeServer);
+    setNewServerSubtitle(activeServerSubtitle);
     setModal("rename-server");
   }
 
@@ -2872,7 +3013,12 @@ function App() {
       [activeServer]: activeChannel,
       [trimmed]: channels[0]?.id ?? activeChannel,
     }));
+    setServerSubtitles((current) => ({
+      ...current,
+      [trimmed]: newServerSubtitle.trim() || DEFAULT_SERVER_SUBTITLE,
+    }));
     setNewServerName("");
+    setNewServerSubtitle("");
     setModal(null);
     log(`Created local server: ${trimmed}.`);
     void sendProfileSync({
@@ -2888,8 +3034,8 @@ function App() {
 
   function renameServer() {
     const nextServer = newServerName.trim();
-    if (!nextServer || nextServer === activeServer) {
-      setModal(null);
+    const nextSubtitle = newServerSubtitle.trim() || DEFAULT_SERVER_SUBTITLE;
+    if (!nextServer) {
       return;
     }
 
@@ -2898,13 +3044,31 @@ function App() {
       return;
     }
 
-    const renamed = renameServerEntries(servers, activeChannelsByServer, activeServer, nextServer, activeChannel);
-    setServers(renamed.servers);
-    setActiveChannelsByServer(renamed.activeChannelsByServer);
-    setActiveServer(nextServer);
-    setNewServerName("");
-    setModal(null);
-    log(`Renamed ${activeServer} to ${nextServer}.`);
+    if (nextServer !== activeServer) {
+      const renamed = renameServerEntries(servers, activeChannelsByServer, activeServer, nextServer, activeChannel);
+      setServers(renamed.servers);
+      setActiveChannelsByServer(renamed.activeChannelsByServer);
+      setActiveServer(nextServer);
+      setServerSubtitles((current) => {
+        const next = { ...current };
+        delete next[activeServer];
+        next[nextServer] = nextSubtitle;
+        return next;
+      });
+      void sendServerSync({
+        action: "rename",
+        serverName: activeServer,
+        channelId: activeChannel,
+        nextServerName: nextServer,
+        nextChannelId: activeChannel,
+      });
+      log(`Renamed ${activeServer} to ${nextServer}.`);
+    } else {
+      setServerSubtitles((current) => ({ ...current, [activeServer]: nextSubtitle }));
+      log(`Updated ${activeServer} subtitle.`);
+    }
+    setNewServerName(nextServer);
+    setNewServerSubtitle(nextSubtitle);
     void sendProfileSync({
       name: name || "Anonymous",
       presence,
@@ -2912,13 +3076,6 @@ function App() {
       membersOpen,
       activeServer: nextServer,
       activeChannel,
-    });
-    void sendServerSync({
-      action: "rename",
-      serverName: activeServer,
-      channelId: activeChannel,
-      nextServerName: nextServer,
-      nextChannelId: activeChannel,
     });
   }
 
@@ -2932,6 +3089,11 @@ function App() {
     const deleted = deleteServerEntries(servers, activeChannelsByServer, activeServer, fallbackServer, fallbackChannel);
 
     setServers(deleted.servers);
+    setServerSubtitles((current) => {
+      const next = { ...current };
+      delete next[activeServer];
+      return next;
+    });
     setActiveChannelsByServer(deleted.activeChannelsByServer);
     setActiveServer(fallbackServer);
     setActiveChannel(fallbackChannel);
@@ -2977,6 +3139,7 @@ function App() {
 
   function closeModal() {
     setModal(null);
+    setLightboxImage(null);
     setDeletingChannelId(null);
     setEditingChannelId(null);
     setEditingMessageId(null);
@@ -3423,10 +3586,12 @@ function App() {
     xmppRoomRef.current = null;
     xmppSpaceRef.current = null;
     setServers([...DEFAULT_SERVERS]);
+    setServerSubtitles({});
     setActiveServer(DEFAULT_SERVERS[0]);
     setActiveChannelsByServer({ [DEFAULT_SERVERS[0]]: DEFAULT_CHANNELS[0].id });
     setActiveChannel(DEFAULT_CHANNELS[0].id);
     setNewServerName("");
+    setNewServerSubtitle("");
     setXmppWebSocketUrl("");
     setXmppJid("");
     setXmppPassword("");
@@ -3454,6 +3619,7 @@ function App() {
     setName(DEFAULT_NAME);
     setPresence(DEFAULT_PRESENCE);
     setAccentColor("#7c8cff");
+    setAppTheme("midnight");
     setStatusMessage("");
     setWebsite("");
     setLocation("");
@@ -3640,7 +3806,7 @@ function App() {
 
       if (plain.type === "voice-sync") {
         setActiveVoiceRoom(plain.room);
-        log(plain.room ? `${plain.author} joined voice room: ${plain.room}.` : `${plain.author} left the voice mesh.`);
+        log(plain.room ? `${plain.author} joined voice channel: ${plain.room}.` : `${plain.author} left voice channel.`);
         return;
       }
 
@@ -4503,7 +4669,7 @@ function App() {
     const tweetUrls = extractTweetUrls(message.body);
     const mediaOnly =
       hasOnlyLinkTokens(message.body) &&
-      (imageUrls.length > 0 || videoUrls.length > 0 || audioUrls.length > 0 || youtubeUrls.length > 0);
+      (imageUrls.length > 0 || videoUrls.length > 0 || audioUrls.length > 0 || youtubeUrls.length > 0 || tweetUrls.length > 0);
 
     return (
       <>
@@ -4546,7 +4712,7 @@ function App() {
           );
         })}
         {tweetUrls.map((url) => (
-          <TweetEmbed key={url} url={url} />
+          <TweetEmbed key={url} url={url} onOpenImage={(url, alt) => setLightboxImage({ url, alt })} />
         ))}
         {message.attachment &&
           (isImageMimeType(message.attachment.mimeType) ? (
@@ -4811,7 +4977,7 @@ function App() {
               <div className="paneProfileSummaryMeta">
                 <strong>{name || "Anonymous"}</strong>
                 <span>{presence}</span>
-                <span>{activeVoiceRoom ? `Voice: ${activeVoiceRoom}` : "Voice idle"}</span>
+                <span>{activeVoiceRoom ? `Voice channel: ${activeVoiceRoom}` : "No voice channel"}</span>
               </div>
               <div className="paneProfileSummaryPeer">
                 <div className={`profileAvatarWrap ${peerAvatarAnimated ? "animated" : ""}`}>
@@ -4967,7 +5133,7 @@ function App() {
             <div className="paneVoiceMesh">
             <div className="paneVoiceMeshHeader">
               <Volume2 size={13} />
-              <span>Voice mesh</span>
+              <span>Voice Channels</span>
               <small>{activeVoiceRoom ? `Active: ${activeVoiceRoom}` : "Idle"}</small>
             </div>
             <div className="paneVoiceMeshRooms">
@@ -5668,7 +5834,7 @@ function App() {
   );
 
   return (
-    <main className={`shell ${membersOpen ? "" : "membersClosed"}`}>
+    <main className={`shell ${membersOpen ? "" : "membersClosed"}`} data-theme={appTheme}>
       <aside className="serverRail" aria-label="Servers">
         {servers.map((server) => (
           <button
@@ -5697,25 +5863,18 @@ function App() {
 
       <aside className="sidebar">
         <div className="workspace">
-          <div>
-            <strong>{activeServer}</strong>
-            <span>decentralized guild</span>
-          </div>
           <div className="workspaceActions">
-            <button className="iconButton" onClick={openRenameServer} aria-label="Rename server" title="Rename server">
-              <Settings size={18} />
-            </button>
-            <button
-              className="iconButton"
-              onClick={openDeleteServer}
-              aria-label="Delete server"
-              title="Delete server"
-              disabled={servers.length <= 1}
-            >
-              <Trash2 size={18} />
-            </button>
+            <div className="workspaceIdentityButton" aria-label="Active server">
+              <span>
+                <strong>{activeServer}</strong>
+                <small>{activeServerSubtitle}</small>
+              </span>
+            </div>
             <button className="iconButton" onClick={openRoomModal} aria-label="Verify room" title="Verify room">
               <ShieldCheck size={20} />
+            </button>
+            <button className="iconButton" onClick={openRenameServer} aria-label="Server settings" title="Server settings">
+              <Settings size={18} />
             </button>
           </div>
         </div>
@@ -5747,19 +5906,6 @@ function App() {
               >
                 <Settings size={14} />
               </button>
-              <button
-                className="channelTool"
-                type="button"
-                onClick={() => {
-                  setDeletingChannelId(channel.id);
-                  setEditingChannelId(null);
-                  setModal("delete-channel");
-                }}
-                disabled={channels.length <= 1}
-                aria-label={`Delete ${channel.label}`}
-              >
-                <X size={14} />
-              </button>
               {unreadByChannel[channel.id] > 0 && (
                 <button
                   className="channelTool"
@@ -5776,7 +5922,7 @@ function App() {
         </section>
 
         <section className="channelBlock">
-          <div className="blockTitle">Voice Mesh</div>
+          <div className="blockTitle">Voice Channels</div>
           {voiceRooms.map((room) => (
             <button className={`channel ${activeVoiceRoom === room ? "selected" : ""}`} key={room} onClick={() => joinVoiceRoom(room)}>
               <Volume2 size={17} />
@@ -6011,8 +6157,43 @@ function App() {
                                 </button>
                                 );
                               })}
+                              <button
+                                type="button"
+                                className="messageMenuEmojiButton"
+                                onClick={() => {
+                                  setReactionPickerMessageId((current) => (current === message.id ? null : message.id));
+                                }}
+                                aria-label="Add emoji reaction"
+                                aria-expanded={reactionPickerMessageId === message.id}
+                                title="Emoji"
+                              >
+                                <Smile size={14} />
+                              </button>
                             </div>
                           </div>
+                          {reactionPickerMessageId === message.id && (
+                            <div className="messageMenuEmojiPicker" role="dialog" aria-label="Emoji reaction picker">
+                              {emojiPickerGroups.map((group) => (
+                                <section className="emojiGroup" key={group.label}>
+                                  <span>{group.label}</span>
+                                  <div className="emojiGrid">
+                                    {group.items.map((emoji) => (
+                                      <button
+                                        type="button"
+                                        key={emoji}
+                                        onClick={() => {
+                                          void sendReaction(message.id, emoji);
+                                        }}
+                                        aria-label={`React ${emoji}`}
+                                      >
+                                        {emoji}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </section>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       ))}
                   </div>
@@ -6355,7 +6536,7 @@ function App() {
           <div className="voiceMeshCompact">
             <div className="voiceMeshCompactHeader">
               <Volume2 size={13} />
-              <span>Voice mesh</span>
+              <span>Voice Channels</span>
               <small>{activeVoiceRoom ? `Active: ${activeVoiceRoom}` : "Idle"}</small>
             </div>
             <div className="voiceMeshCompactRooms">
@@ -6402,10 +6583,21 @@ function App() {
         </section>
       </aside>
 
+      {lightboxImage && (
+        <div className="lightboxLayer" role="presentation" onMouseDown={() => setLightboxImage(null)}>
+          <div className="lightboxDialog" role="dialog" aria-modal="true" aria-label="Image preview" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="lightboxClose iconButton" type="button" onClick={() => setLightboxImage(null)} aria-label="Close image preview">
+              <X size={20} />
+            </button>
+            <img src={lightboxImage.url} alt={lightboxImage.alt} />
+          </div>
+        </div>
+      )}
+
       {modal && (
         <div className={`modalLayer ${modal === "search" ? "searchLayer" : ""}`} role="presentation" onMouseDown={closeModal}>
           <section
-            className={`modal ${modal === "search" ? "searchModal" : ""} ${modal === "session" ? "sessionModal" : ""}`}
+            className={`modal ${modal === "search" ? "searchModal" : ""} ${modal === "session" ? "sessionModal" : ""} ${modal === "settings" ? "settingsModal" : ""}`}
             role="dialog"
             aria-modal="true"
             onMouseDown={(event) => event.stopPropagation()}
@@ -6413,7 +6605,7 @@ function App() {
             <div className="modalHeader">
               <strong>
                 {modal === "server" && "Create Server"}
-                {modal === "rename-server" && "Rename Server"}
+                {modal === "rename-server" && "Server Settings"}
                 {modal === "delete-server" && "Delete Server"}
                 {modal === "channel" && "Create Channel"}
                 {modal === "rename-channel" && "Rename Channel"}
@@ -6436,6 +6628,10 @@ function App() {
                   Server name
                   <input value={newServerName} onChange={(event) => setNewServerName(event.target.value)} autoFocus />
                 </label>
+                <label>
+                  Subtitle
+                  <input value={newServerSubtitle} onChange={(event) => setNewServerSubtitle(event.target.value)} placeholder={DEFAULT_SERVER_SUBTITLE} />
+                </label>
                 <button className="primaryButton" type="button" onClick={createServer}>Create local server</button>
               </div>
             )}
@@ -6446,7 +6642,21 @@ function App() {
                   Server name
                   <input value={newServerName} onChange={(event) => setNewServerName(event.target.value)} autoFocus />
                 </label>
-                <button className="primaryButton" type="button" onClick={renameServer}>Rename server</button>
+                <label>
+                  Subtitle
+                  <input value={newServerSubtitle} onChange={(event) => setNewServerSubtitle(event.target.value)} placeholder={DEFAULT_SERVER_SUBTITLE} />
+                </label>
+                <div className="modalActions">
+                  <button className="primaryButton" type="button" onClick={renameServer}>Save</button>
+                  <button
+                    className="dangerButton"
+                    type="button"
+                    onClick={openDeleteServer}
+                    disabled={servers.length <= 1}
+                  >
+                    Delete server
+                  </button>
+                </div>
               </div>
             )}
 
@@ -6456,7 +6666,7 @@ function App() {
                   Delete {activeServer}? The app will switch to another local server and keep the shared channels intact.
                 </p>
                 <div className="modalActions">
-                  <button className="secondaryButton" type="button" onClick={closeModal}>Cancel</button>
+                  <button className="secondaryButton" type="button" onClick={() => setModal("rename-server")}>Back</button>
                   <button className="dangerButton" type="button" onClick={deleteServer}>Delete server</button>
                 </div>
               </div>
@@ -6478,7 +6688,20 @@ function App() {
                   Channel name
                   <input value={newChannelName} onChange={(event) => setNewChannelName(event.target.value)} autoFocus />
                 </label>
-                <button className="primaryButton" type="button" onClick={renameChannel}>Rename text channel</button>
+                <div className="modalActions">
+                  <button className="primaryButton" type="button" onClick={renameChannel}>Save</button>
+                  <button
+                    className="dangerButton"
+                    type="button"
+                    onClick={() => {
+                      setDeletingChannelId(editingChannelId);
+                      setModal("delete-channel");
+                    }}
+                    disabled={channels.length <= 1 || !editingChannelId}
+                  >
+                    Delete channel
+                  </button>
+                </div>
               </div>
             )}
 
@@ -6488,7 +6711,7 @@ function App() {
                   Delete #{deletingChannel.label}? Messages from this channel will move to #{deleteFallbackChannel.label}.
                 </p>
                 <div className="modalActions">
-                  <button className="secondaryButton" type="button" onClick={closeModal}>Cancel</button>
+                  <button className="secondaryButton" type="button" onClick={() => setModal(editingChannelId ? "rename-channel" : null)}>Back</button>
                   <button className="dangerButton" type="button" onClick={confirmDeleteChannel}>Delete channel</button>
                 </div>
               </div>
@@ -6836,7 +7059,7 @@ function App() {
 
             {modal === "settings" && (
               <div className="modalBody">
-                <details className="collapsibleSection" open>
+                <details className="collapsibleSection profileSettingsGrid" open>
                   <summary>Profile</summary>
                   <label>
                     Display name
@@ -6865,6 +7088,16 @@ function App() {
                   <label>
                     Accent color
                     <input type="color" value={accentColor} onChange={(event) => setAccentColor(event.target.value)} />
+                  </label>
+                  <label>
+                    Theme
+                    <select value={appTheme} onChange={(event) => setAppTheme(normalizeAppTheme(event.target.value))}>
+                      {APP_THEMES.map((theme) => (
+                        <option key={theme.id} value={theme.id}>
+                          {theme.label}
+                        </option>
+                      ))}
+                    </select>
                   </label>
                   <label>
                     Status

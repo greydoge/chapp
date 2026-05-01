@@ -1,9 +1,318 @@
 :root {
   color-scheme: dark;
+  --theme-app-bg: #101114;
+  --theme-rail-bg: #15161a;
+  --theme-sidebar-bg: #1b1d22;
+  --theme-chat-bg: #202228;
+  --theme-panel-bg: #1b1d22;
+  --theme-surface: #13161b;
+  --theme-surface-2: #15171c;
+  --theme-surface-3: #23262d;
+  --theme-hover: #2d313a;
+  --theme-border: #2d3038;
+  --theme-border-strong: #3a3f4a;
+  --theme-text: #f3f5f8;
+  --theme-text-soft: #dce3ea;
+  --theme-muted: #9aa3af;
+  --theme-muted-strong: #b7bec8;
+  --theme-accent: #e85937;
+  --theme-accent-hover: #f36d4e;
+  --theme-accent-soft: rgba(232, 89, 55, 0.16);
+  --theme-success: #52c27f;
+  --theme-warning: #f0b35c;
+  --theme-link: #7bc4ff;
+  --theme-link-hover: #9ad4ff;
+  --theme-danger: #c63d2f;
+  --theme-shadow: rgba(0, 0, 0, 0.48);
+  --theme-overlay: rgba(8, 9, 12, 0.62);
+  --theme-accent-fg: #fff;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #101114;
-  color: #f3f5f8;
+  background: var(--theme-app-bg);
+  color: var(--theme-text);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --theme-app-bg: #f3f5f8;
+  --theme-rail-bg: #e5e9ef;
+  --theme-sidebar-bg: #f8fafc;
+  --theme-chat-bg: #ffffff;
+  --theme-panel-bg: #f8fafc;
+  --theme-surface: #ffffff;
+  --theme-surface-2: #f1f4f8;
+  --theme-surface-3: #e8edf3;
+  --theme-hover: #e3e9f1;
+  --theme-border: #d7dee8;
+  --theme-border-strong: #c5cfdc;
+  --theme-text: #111827;
+  --theme-text-soft: #263241;
+  --theme-muted: #64748b;
+  --theme-muted-strong: #475569;
+  --theme-accent: #2563eb;
+  --theme-accent-hover: #1d4ed8;
+  --theme-accent-soft: rgba(37, 99, 235, 0.12);
+  --theme-success: #15803d;
+  --theme-warning: #b45309;
+  --theme-link: #1d4ed8;
+  --theme-link-hover: #1e40af;
+  --theme-danger: #dc2626;
+  --theme-shadow: rgba(15, 23, 42, 0.18);
+  --theme-overlay: rgba(15, 23, 42, 0.28);
+  --theme-accent-fg: #fff;
+}
+
+:root[data-theme="maximum-black"] {
+  color-scheme: dark;
+  --theme-app-bg: #000000;
+  --theme-rail-bg: #000000;
+  --theme-sidebar-bg: #000000;
+  --theme-chat-bg: #000000;
+  --theme-panel-bg: #000000;
+  --theme-surface: #000000;
+  --theme-surface-2: #000000;
+  --theme-surface-3: #000000;
+  --theme-hover: #080808;
+  --theme-border: #111111;
+  --theme-border-strong: #222222;
+  --theme-text: #ffffff;
+  --theme-text-soft: #eeeeee;
+  --theme-muted: #aaaaaa;
+  --theme-muted-strong: #cccccc;
+  --theme-accent: #ffffff;
+  --theme-accent-hover: #e8e8e8;
+  --theme-accent-soft: rgba(255, 255, 255, 0.12);
+  --theme-success: #00ff66;
+  --theme-warning: #ffcc00;
+  --theme-link: #66ccff;
+  --theme-link-hover: #b3e5ff;
+  --theme-danger: #ff3333;
+  --theme-shadow: rgba(0, 0, 0, 0.88);
+  --theme-overlay: rgba(0, 0, 0, 0.82);
+  --theme-accent-fg: #000000;
+}
+
+:root[data-theme="maximum-white"] {
+  color-scheme: light;
+  --theme-app-bg: #ffffff;
+  --theme-rail-bg: #ffffff;
+  --theme-sidebar-bg: #ffffff;
+  --theme-chat-bg: #ffffff;
+  --theme-panel-bg: #ffffff;
+  --theme-surface: #ffffff;
+  --theme-surface-2: #ffffff;
+  --theme-surface-3: #ffffff;
+  --theme-hover: #f8f8f8;
+  --theme-border: #eeeeee;
+  --theme-border-strong: #dddddd;
+  --theme-text: #000000;
+  --theme-text-soft: #111111;
+  --theme-muted: #555555;
+  --theme-muted-strong: #333333;
+  --theme-accent: #000000;
+  --theme-accent-hover: #222222;
+  --theme-accent-soft: rgba(0, 0, 0, 0.06);
+  --theme-success: #008000;
+  --theme-warning: #a15c00;
+  --theme-link: #0000ee;
+  --theme-link-hover: #551a8b;
+  --theme-danger: #cc0000;
+  --theme-shadow: rgba(0, 0, 0, 0.08);
+  --theme-overlay: rgba(255, 255, 255, 0.72);
+  --theme-accent-fg: #ffffff;
+}
+
+:root[data-theme="ocean"] {
+  --theme-app-bg: #08151d;
+  --theme-rail-bg: #0b1d29;
+  --theme-sidebar-bg: #102735;
+  --theme-chat-bg: #123040;
+  --theme-panel-bg: #102735;
+  --theme-surface: #0d2230;
+  --theme-surface-2: #0f2a3a;
+  --theme-surface-3: #17384a;
+  --theme-hover: #1f4960;
+  --theme-border: #24495c;
+  --theme-border-strong: #35677e;
+  --theme-accent: #19a7ce;
+  --theme-accent-hover: #22c1ee;
+  --theme-accent-soft: rgba(25, 167, 206, 0.16);
+  --theme-success: #63d4a6;
+  --theme-warning: #ffd166;
+  --theme-link: #7dd3fc;
+  --theme-link-hover: #bae6fd;
+}
+
+:root[data-theme="forest"] {
+  --theme-app-bg: #0d140f;
+  --theme-rail-bg: #111c15;
+  --theme-sidebar-bg: #17251b;
+  --theme-chat-bg: #1b2d20;
+  --theme-panel-bg: #17251b;
+  --theme-surface: #102018;
+  --theme-surface-2: #14281d;
+  --theme-surface-3: #203a2a;
+  --theme-hover: #2b4d37;
+  --theme-border: #2e4c38;
+  --theme-border-strong: #42664c;
+  --theme-accent: #4ade80;
+  --theme-accent-hover: #86efac;
+  --theme-accent-soft: rgba(74, 222, 128, 0.16);
+  --theme-success: #86efac;
+  --theme-warning: #facc15;
+  --theme-link: #8fd6b3;
+  --theme-link-hover: #bbf7d0;
+  --theme-accent-fg: #07130b;
+}
+
+:root[data-theme="rose"] {
+  --theme-app-bg: #1b1016;
+  --theme-rail-bg: #24141c;
+  --theme-sidebar-bg: #2d1823;
+  --theme-chat-bg: #341d2a;
+  --theme-panel-bg: #2d1823;
+  --theme-surface: #24141d;
+  --theme-surface-2: #2b1822;
+  --theme-surface-3: #422333;
+  --theme-hover: #573047;
+  --theme-border: #563246;
+  --theme-border-strong: #76455f;
+  --theme-accent: #fb7185;
+  --theme-accent-hover: #fda4af;
+  --theme-accent-soft: rgba(251, 113, 133, 0.16);
+  --theme-success: #7dd3a8;
+  --theme-warning: #f9c46b;
+  --theme-link: #f9a8d4;
+  --theme-link-hover: #fbcfe8;
+}
+
+:root[data-theme="amber"] {
+  color-scheme: light;
+  --theme-app-bg: #f8efe1;
+  --theme-rail-bg: #ead9bd;
+  --theme-sidebar-bg: #fff8eb;
+  --theme-chat-bg: #fffcf5;
+  --theme-panel-bg: #fff8eb;
+  --theme-surface: #fffaf0;
+  --theme-surface-2: #f6ead6;
+  --theme-surface-3: #ead7b9;
+  --theme-hover: #e4cda8;
+  --theme-border: #dbc39d;
+  --theme-border-strong: #c7a779;
+  --theme-text: #2b2117;
+  --theme-text-soft: #4a3827;
+  --theme-muted: #7c6750;
+  --theme-muted-strong: #5f4a34;
+  --theme-accent: #b45309;
+  --theme-accent-hover: #92400e;
+  --theme-accent-soft: rgba(180, 83, 9, 0.14);
+  --theme-success: #15803d;
+  --theme-warning: #a16207;
+  --theme-link: #9a3412;
+  --theme-link-hover: #7c2d12;
+  --theme-shadow: rgba(79, 52, 22, 0.2);
+}
+
+:root[data-theme="honey"] {
+  color-scheme: light;
+  --theme-app-bg: #fff4cc;
+  --theme-rail-bg: #f0ce73;
+  --theme-sidebar-bg: #fff8df;
+  --theme-chat-bg: #fffdf4;
+  --theme-panel-bg: #fff8df;
+  --theme-surface: #fff9e6;
+  --theme-surface-2: #f7e8b8;
+  --theme-surface-3: #edd18a;
+  --theme-hover: #e8c56f;
+  --theme-border: #d8b463;
+  --theme-border-strong: #bd9141;
+  --theme-text: #2f2407;
+  --theme-text-soft: #4b390b;
+  --theme-muted: #806928;
+  --theme-muted-strong: #5f4b14;
+  --theme-accent: #b7791f;
+  --theme-accent-hover: #975a16;
+  --theme-accent-soft: rgba(183, 121, 31, 0.16);
+  --theme-success: #2f855a;
+  --theme-warning: #975a16;
+  --theme-link: #9c4221;
+  --theme-link-hover: #7b341e;
+  --theme-shadow: rgba(99, 72, 15, 0.2);
+}
+
+:root[data-theme="parchment"] {
+  color-scheme: light;
+  --theme-app-bg: #f4ead5;
+  --theme-rail-bg: #ddccb0;
+  --theme-sidebar-bg: #fbf4e6;
+  --theme-chat-bg: #fffaf0;
+  --theme-panel-bg: #fbf4e6;
+  --theme-surface: #fff7e8;
+  --theme-surface-2: #eee1ca;
+  --theme-surface-3: #dfccb0;
+  --theme-hover: #d6bea0;
+  --theme-border: #cdb897;
+  --theme-border-strong: #b2936c;
+  --theme-text: #2c2318;
+  --theme-text-soft: #463626;
+  --theme-muted: #77634a;
+  --theme-muted-strong: #5d4933;
+  --theme-accent: #8b5e34;
+  --theme-accent-hover: #70471f;
+  --theme-accent-soft: rgba(139, 94, 52, 0.14);
+  --theme-success: #277447;
+  --theme-warning: #9a5f0a;
+  --theme-link: #7c3f1d;
+  --theme-link-hover: #5f2e12;
+  --theme-shadow: rgba(73, 53, 30, 0.18);
+}
+
+:root[data-theme="copper"] {
+  color-scheme: light;
+  --theme-app-bg: #fae7dc;
+  --theme-rail-bg: #e6b79c;
+  --theme-sidebar-bg: #fff2ea;
+  --theme-chat-bg: #fff8f3;
+  --theme-panel-bg: #fff2ea;
+  --theme-surface: #fff3eb;
+  --theme-surface-2: #f2d4c3;
+  --theme-surface-3: #dfb092;
+  --theme-hover: #d69d7a;
+  --theme-border: #cf9d7f;
+  --theme-border-strong: #ad714c;
+  --theme-text: #2f1b12;
+  --theme-text-soft: #513021;
+  --theme-muted: #7b5846;
+  --theme-muted-strong: #60402f;
+  --theme-accent: #a24f2f;
+  --theme-accent-hover: #84371d;
+  --theme-accent-soft: rgba(162, 79, 47, 0.14);
+  --theme-success: #23754a;
+  --theme-warning: #9a5a16;
+  --theme-link: #9f3a20;
+  --theme-link-hover: #7e2c18;
+  --theme-shadow: rgba(84, 40, 22, 0.2);
+}
+
+:root[data-theme="grape"] {
+  --theme-app-bg: #14111f;
+  --theme-rail-bg: #1b1729;
+  --theme-sidebar-bg: #211c33;
+  --theme-chat-bg: #28213c;
+  --theme-panel-bg: #211c33;
+  --theme-surface: #1a1628;
+  --theme-surface-2: #211b31;
+  --theme-surface-3: #302747;
+  --theme-hover: #41345f;
+  --theme-border: #463a60;
+  --theme-border-strong: #655283;
+  --theme-accent: #a78bfa;
+  --theme-accent-hover: #c4b5fd;
+  --theme-accent-soft: rgba(167, 139, 250, 0.16);
+  --theme-success: #6ee7b7;
+  --theme-warning: #fde68a;
+  --theme-link: #c4b5fd;
+  --theme-link-hover: #ddd6fe;
 }
 
 * {
@@ -15,7 +324,7 @@ body {
   min-width: 320px;
   height: 100vh;
   overflow: hidden;
-  background: #101114;
+  background: var(--theme-app-bg);
 }
 
 html,
@@ -120,23 +429,56 @@ button {
 }
 
 .workspace {
-  display: flex;
+  display: grid;
   align-items: center;
-  justify-content: space-between;
   min-height: 64px;
-  padding: 0 18px;
+  padding: 10px 12px;
   border-bottom: 1px solid #2a2d35;
 }
 
 .workspaceActions {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
   align-items: center;
   gap: 6px;
+  width: 100%;
 }
 
 .workspace .iconButton {
   width: 30px;
   height: 30px;
+}
+
+.workspaceIdentityButton {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 42px;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #f3f5f8;
+  text-align: left;
+}
+
+.workspaceIdentityButton span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.workspaceIdentityButton strong,
+.workspaceIdentityButton small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspaceIdentityButton small {
+  color: #9aa3af;
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .workspace .iconButton:disabled {
@@ -212,6 +554,8 @@ label {
 .channelRow {
   display: flex;
   align-items: center;
+  gap: 4px;
+  padding-right: 4px;
   border-radius: 6px;
 }
 
@@ -1240,8 +1584,9 @@ label {
   gap: 8px;
   margin: 0 22px 22px;
   padding: 8px;
+  border: 1px solid #383c46;
   border-radius: 8px;
-  background: #2b2e36;
+  background: transparent;
 }
 
 .sessionTab {
@@ -1710,7 +2055,8 @@ label {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   border: 1px solid #383c46;
   border-radius: 7px;
@@ -1719,7 +2065,8 @@ textarea {
   color: #f6f7f9;
 }
 
-input {
+input,
+select {
   height: 38px;
   padding: 0 10px;
 }
@@ -1939,8 +2286,8 @@ textarea {
   display: grid;
   gap: 10px;
   width: min(260px, calc(100vw - 32px));
-  max-height: min(320px, calc(100vh - 24px));
-  overflow-y: auto;
+  max-height: calc(100vh - 24px);
+  overflow: visible;
   padding: 12px;
   border: 1px solid #3a3f4a;
   border-radius: 8px;
@@ -1981,6 +2328,15 @@ textarea {
   border-top: 1px solid #2d3038;
 }
 
+.messageMenuEmojiPicker {
+  display: grid;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid #3a3f4a;
+  border-radius: 8px;
+  background: #181a20;
+}
+
 .messageMenuReactions span {
   color: #9aa3af;
   font-size: 11px;
@@ -2014,6 +2370,14 @@ textarea {
 .messageMenuReactionsGrid button.active {
   border-color: #e85937;
   background: rgba(232, 89, 55, 0.16);
+}
+
+.messageMenuReactionsGrid .messageMenuEmojiButton {
+  min-width: 38px;
+  width: 38px;
+  margin-left: auto;
+  padding: 0;
+  justify-content: center;
 }
 
 .messageMenuReactionsGrid button small {
@@ -2278,7 +2642,22 @@ textarea {
   gap: 8px;
 }
 
+.tweetMediaGrid.count-2,
+.tweetMediaGrid.count-4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.tweetMediaGrid.count-3 {
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+}
+
+.tweetMediaGrid.count-3 > :first-child {
+  grid-row: 1 / span 2;
+}
+
 .tweetMediaLink {
+  position: relative;
   display: block;
   color: inherit;
   text-decoration: none;
@@ -2286,9 +2665,42 @@ textarea {
   overflow: hidden;
 }
 
+.tweetMediaGrid.count-2 .tweetMediaLink,
+.tweetMediaGrid.count-3 .tweetMediaLink,
+.tweetMediaGrid.count-4 .tweetMediaLink,
+.tweetMediaGrid.count-2 .tweetMediaVideoTile,
+.tweetMediaGrid.count-3 .tweetMediaVideoTile,
+.tweetMediaGrid.count-4 .tweetMediaVideoTile {
+  min-height: 0;
+  aspect-ratio: 1 / 1;
+}
+
+.tweetMediaGrid.count-3 > :first-child {
+  aspect-ratio: auto;
+}
+
 .tweetMediaLink:hover {
   outline: 1px solid rgba(123, 196, 255, 0.35);
   outline-offset: 0;
+}
+
+.tweetMediaVideoTile {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.tweetMediaMore {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.52);
+  color: #fff;
+  font-size: clamp(28px, 9vw, 54px);
+  font-weight: 900;
 }
 
 .tweetMediaFallback {
@@ -2312,6 +2724,13 @@ textarea {
 
 .tweetImage {
   height: auto;
+}
+
+.tweetMediaGrid.count-2 .tweetImage,
+.tweetMediaGrid.count-3 .tweetImage,
+.tweetMediaGrid.count-4 .tweetImage {
+  height: 100%;
+  object-fit: cover;
 }
 
 .tweetVideo {
@@ -2689,6 +3108,42 @@ textarea {
   background: transparent;
 }
 
+.lightboxLayer {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.82);
+}
+
+.lightboxDialog {
+  position: relative;
+  display: grid;
+  place-items: center;
+  max-width: min(1120px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+}
+
+.lightboxDialog img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 48px);
+  border-radius: 8px;
+  object-fit: contain;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+}
+
+.lightboxClose {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+}
+
 .modal {
   width: min(420px, 100%);
   border: 1px solid #3a3f4a;
@@ -2705,6 +3160,12 @@ textarea {
 
 .modal.sessionModal {
   width: min(420px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: hidden;
+}
+
+.modal.settingsModal {
+  width: min(760px, calc(100vw - 24px));
   max-height: calc(100vh - 24px);
   overflow: hidden;
 }
@@ -2728,6 +3189,27 @@ textarea {
 .modal.sessionModal .modalBody {
   max-height: calc(100vh - 82px);
   overflow-y: auto;
+}
+
+.modal.settingsModal .modalBody {
+  max-height: calc(100vh - 82px);
+  overflow-y: auto;
+}
+
+.profileSettingsGrid[open] {
+  display: block;
+  column-count: 2;
+  column-gap: 14px;
+}
+
+.profileSettingsGrid > summary {
+  column-span: all;
+  margin-bottom: 12px;
+}
+
+.profileSettingsGrid > label {
+  break-inside: avoid;
+  margin-bottom: 12px;
 }
 
 .modalActions .secondaryButton svg {
@@ -2871,6 +3353,272 @@ textarea {
   background: #df4c3d;
 }
 
+:root[data-theme] .shell {
+  color: var(--theme-text);
+  background: var(--theme-app-bg);
+}
+
+:root[data-theme] .serverRail {
+  background: var(--theme-rail-bg);
+  border-color: var(--theme-border);
+}
+
+:root[data-theme] .sidebar,
+:root[data-theme] .rightPanel,
+:root[data-theme] .modal {
+  background: var(--theme-panel-bg);
+  border-color: var(--theme-border);
+}
+
+:root[data-theme] .chat {
+  background: var(--theme-chat-bg);
+}
+
+:root[data-theme] .workspace,
+:root[data-theme] .topbar,
+:root[data-theme] .modalHeader,
+:root[data-theme] .panelSection,
+:root[data-theme] .paneComposer,
+:root[data-theme] .chatPaneSplitHeaderTop {
+  border-color: var(--theme-border);
+}
+
+:root[data-theme] .userStrip,
+:root[data-theme] .collapsibleSection,
+:root[data-theme] .profileCard,
+:root[data-theme] .peerProfileCard,
+:root[data-theme] .attachmentPreview,
+:root[data-theme] .roomFingerprint,
+:root[data-theme] .eventsLog,
+:root[data-theme] .messageQuote,
+:root[data-theme] .inlineCode,
+:root[data-theme] .messageCodeBlock,
+:root[data-theme] .attachmentCard,
+:root[data-theme] .tweetCard,
+:root[data-theme] .tweetReply,
+:root[data-theme] .tweetQuote,
+:root[data-theme] .tweetRetweet,
+:root[data-theme] .gifPicker,
+:root[data-theme] .gifGridShell,
+:root[data-theme] .emojiPicker,
+:root[data-theme] .reactionPicker,
+:root[data-theme] .messageMenu,
+:root[data-theme] .messageMenuEmojiPicker,
+:root[data-theme] .chatPaneWindow,
+:root[data-theme] .paneMediaStrip {
+  border-color: var(--theme-border);
+  background: var(--theme-surface);
+  color: var(--theme-text-soft);
+}
+
+:root[data-theme] .composer {
+  border-color: var(--theme-border);
+  background: transparent;
+  color: var(--theme-text-soft);
+}
+
+:root[data-theme] .composer:focus-within {
+  border-color: var(--theme-border-strong);
+  background: transparent;
+}
+
+:root[data-theme] .composer textarea,
+:root[data-theme] .composer input {
+  background: transparent;
+  color: var(--theme-text);
+}
+
+:root[data-theme] input,
+:root[data-theme] textarea,
+:root[data-theme] select,
+:root[data-theme] .paneComposer textarea,
+:root[data-theme] .gifPickerSearch input {
+  border-color: var(--theme-border-strong);
+  background: var(--theme-surface-2);
+  color: var(--theme-text);
+}
+
+:root[data-theme] input::placeholder,
+:root[data-theme] textarea::placeholder,
+:root[data-theme] .gifPickerSearch input::placeholder {
+  color: var(--theme-muted);
+}
+
+:root[data-theme] .server,
+:root[data-theme] .chatPaneChannelSelect select,
+:root[data-theme] .gifTabs button,
+:root[data-theme] .gifPickerHeader button,
+:root[data-theme] .secondaryButton,
+:root[data-theme] .signalActions button,
+:root[data-theme] .miniButton,
+:root[data-theme] .iconButton,
+:root[data-theme] .messageAction,
+:root[data-theme] .messageMenuActions button,
+:root[data-theme] .messageMenuReactionsGrid button,
+:root[data-theme] .emojiGrid button,
+:root[data-theme] .channelTool,
+:root[data-theme] .splitTitle button {
+  border-color: var(--theme-border-strong);
+  background: var(--theme-surface-3);
+  color: var(--theme-text-soft);
+}
+
+:root[data-theme] .server.active,
+:root[data-theme] .primaryButton,
+:root[data-theme] .signalButtons button,
+:root[data-theme] .paneComposerActions button[type="submit"],
+:root[data-theme] .gifTabs button.active,
+:root[data-theme] .messageMenuReactionsGrid button.active,
+:root[data-theme] .reactionBar button.active,
+:root[data-theme] .channelUnread {
+  border-color: var(--theme-accent);
+  background: var(--theme-accent);
+  color: var(--theme-accent-fg);
+}
+
+:root[data-theme] .primaryButton:hover,
+:root[data-theme] .signalButtons button:hover,
+:root[data-theme] .paneComposerActions button[type="submit"]:hover {
+  background: var(--theme-accent-hover);
+}
+
+:root[data-theme] .channel,
+:root[data-theme] .workspace span,
+:root[data-theme] .userStrip span,
+:root[data-theme] .roomTitle span,
+:root[data-theme] .meta span,
+:root[data-theme] .events span,
+:root[data-theme] label,
+:root[data-theme] .blockTitle,
+:root[data-theme] .signalStatus,
+:root[data-theme] .emptyState,
+:root[data-theme] .messageGrey,
+:root[data-theme] .tweetMeta,
+:root[data-theme] .tweetIdentity span,
+:root[data-theme] .tweetReplyHeader span,
+:root[data-theme] .tweetRelationLabel,
+:root[data-theme] .attachmentPreview span,
+:root[data-theme] .chatPanePaneTitle span,
+:root[data-theme] .chatPaneSplitHeader,
+:root[data-theme] .paneMessageItemMeta span,
+:root[data-theme] .messageMenuReactions span,
+:root[data-theme] .messageMenuReactionsGrid button small,
+:root[data-theme] .reactionBar small {
+  color: var(--theme-muted);
+}
+
+:root[data-theme] .workspace strong,
+:root[data-theme] .workspaceIdentityButton strong,
+:root[data-theme] .roomTitle strong,
+:root[data-theme] .collapsibleSection > summary,
+:root[data-theme] .paneMessageItemMeta strong,
+:root[data-theme] .chatPanePaneTitle strong,
+:root[data-theme] .chatPaneSplitHeader strong,
+:root[data-theme] .attachmentPreview strong,
+:root[data-theme] .tweetIdentity strong,
+:root[data-theme] .tweetReplyHeader strong {
+  color: var(--theme-text);
+}
+
+:root[data-theme] .bubble p,
+:root[data-theme] .paneMessageItemBodyRich,
+:root[data-theme] .modalCopy,
+:root[data-theme] .tweetBody p,
+:root[data-theme] .tweetReply p {
+  color: var(--theme-text-soft);
+}
+
+:root[data-theme] .bubble p a,
+:root[data-theme] .tweetBody a,
+:root[data-theme] .tweetReply a {
+  color: var(--theme-link);
+}
+
+:root[data-theme] .bubble p a:hover,
+:root[data-theme] .tweetBody a:hover,
+:root[data-theme] .tweetReply a:hover {
+  color: var(--theme-link-hover);
+}
+
+:root[data-theme] .channelRow:hover,
+:root[data-theme] .channelRow.selected,
+:root[data-theme] .channel:hover,
+:root[data-theme] .miniButton:hover,
+:root[data-theme] .iconButton:hover,
+:root[data-theme] .miniButton.active,
+:root[data-theme] .iconButton.active,
+:root[data-theme] .channelTool:hover,
+:root[data-theme] .splitTitle button:hover,
+:root[data-theme] .secondaryButton:hover:not(:disabled),
+:root[data-theme] .signalActions button:hover,
+:root[data-theme] .gifPickerHeader button:hover,
+:root[data-theme] .messageAction:hover,
+:root[data-theme] .messageMenuActions button:hover,
+:root[data-theme] .messageMenuReactionsGrid button:hover,
+:root[data-theme] .emojiGrid button:hover {
+  border-color: var(--theme-accent);
+  background: var(--theme-hover);
+  color: var(--theme-text);
+}
+
+:root[data-theme] .miniButton.active,
+:root[data-theme] .iconButton.active {
+  box-shadow: inset 0 -2px 0 var(--theme-accent);
+}
+
+:root[data-theme] .server.add,
+:root[data-theme] .status.online,
+:root[data-theme] .dot.online,
+:root[data-theme] .fingerprintStatus.match {
+  color: var(--theme-success);
+}
+
+:root[data-theme] .serverUnread {
+  background: var(--theme-success);
+  color: var(--theme-app-bg);
+}
+
+:root[data-theme] .status,
+:root[data-theme] .paneUnreadBadge {
+  color: var(--theme-warning);
+}
+
+:root[data-theme] .gifTabs button.active {
+  border-color: var(--theme-accent);
+  background: var(--theme-accent-soft);
+}
+
+:root[data-theme] .message.mine .bubble {
+  border-color: transparent;
+  background: transparent;
+}
+
+:root[data-theme] .messageMenuActions,
+:root[data-theme] .messageMenuReactions {
+  border-color: var(--theme-border);
+}
+
+:root[data-theme] .message.focused .bubble {
+  box-shadow: inset 3px 0 0 var(--theme-success);
+}
+
+:root[data-theme] .avatar {
+  background: linear-gradient(135deg, var(--theme-accent), var(--theme-success));
+  color: var(--theme-accent-fg);
+}
+
+:root[data-theme] .dangerButton {
+  background: var(--theme-danger);
+}
+
+:root[data-theme] .modalLayer {
+  background: var(--theme-overlay);
+}
+
+:root[data-theme] .modal {
+  box-shadow: 0 24px 70px var(--theme-shadow);
+}
+
 @media (max-width: 1180px) {
   .shell {
     grid-template-columns: 72px 230px minmax(0, 1fr);
@@ -2965,8 +3713,21 @@ textarea {
     max-height: calc(100vh - 16px);
   }
 
+  .modal.settingsModal {
+    width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+  }
+
   .modal.sessionModal .modalBody {
     max-height: calc(100vh - 72px);
+  }
+
+  .modal.settingsModal .modalBody {
+    max-height: calc(100vh - 72px);
+  }
+
+  .profileSettingsGrid[open] {
+    column-count: 1;
   }
 
   .chatSplit {

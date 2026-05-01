@@ -31,6 +31,12 @@ describe("image embed helpers", () => {
     ]);
   });
 
+  it("extracts Twitter image CDN links with format query params", () => {
+    expect(extractImageUrls("look https://pbs.twimg.com/media/HHFouE-WMAAro61?format=jpg&name=small")).toEqual([
+      "https://pbs.twimg.com/media/HHFouE-WMAAro61?format=jpg&name=small",
+    ]);
+  });
+
   it("extracts video links from text", () => {
     expect(extractVideoUrls("watch https://example.com/a.mp4 and https://example.com/b.webm?x=1")).toEqual([
       "https://example.com/a.mp4",

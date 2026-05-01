@@ -7,6 +7,7 @@ import { type UnreadCounts } from "./unread";
 export type WorkspaceBackupSettings = {
   activeServer?: string;
   activeChannelsByServer?: Record<string, string>;
+  serverSubtitles?: Record<string, string>;
   activeVoiceRoom?: string | null;
   channels?: { id: string; label: string }[];
   xmppWebSocketUrl?: string;
@@ -27,6 +28,7 @@ export type WorkspaceBackupSettings = {
   hobbies?: string;
   languages?: string;
   accentColor?: string;
+  appTheme?: string;
   statusMessage?: string;
   website?: string;
   location?: string;
@@ -50,6 +52,7 @@ export type WorkspaceBackupSettings = {
   recentEmojis?: string[];
   newChannelName?: string;
   newServerName?: string;
+  newServerSubtitle?: string;
   draftByChannel?: ChannelDrafts;
   editDraftByMessage?: MessageEditDrafts;
   replyTargetByChannel?: ReplyTargets;
