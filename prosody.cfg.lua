@@ -158,8 +158,8 @@ authentication = "internal_hashed"
 
 -- For the "sql" backend, you can uncomment *one* of the below to configure:
 --sql = { driver = "SQLite3", database = "prosody.sqlite" } -- Default. 'database' is the filename.
---sql = { driver = "MySQL", database = "prosody", username = "prosody", password = "secret", host = "localhost" }
---sql = { driver = "PostgreSQL", database = "prosody", username = "prosody", password = "secret", host = "localhost" }
+--sql = { driver = "MySQL", database = "prosody", username = "prosody", password = "REPLACE_ME", host = "localhost" }
+--sql = { driver = "PostgreSQL", database = "prosody", username = "prosody", password = "REPLACE_ME", host = "localhost" }
 
 
 -- Archiving configuration
@@ -185,7 +185,7 @@ archive_expires_after = "1w" -- Remove archived messages after 1 week
 --turn_external_host = "turn.example.com"
 
 -- This secret must be set to the same value in both Prosody and the TURN server
---turn_external_secret = "your-secret-turn-access-token"
+--turn_external_secret = "REPLACE_ME"
 
 
 -- Logging configuration
@@ -264,7 +264,7 @@ Component "pubsub.doge-cube.local" "pubsub"
 -- see: https://prosody.im/doc/components#adding_an_external_component
 --
 --Component "gateway.example.com"
---	component_secret = "password"
+--	component_secret = "REPLACE_ME"
 
 Include "conf.d/*.cfg.lua"
 
