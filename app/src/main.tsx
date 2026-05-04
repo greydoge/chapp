@@ -91,7 +91,7 @@ import {
 } from "./imageEmbeds";
 import { buildYouTubeEmbedUrl, extractYouTubeUrls, getYouTubeVideoId, isYouTubeShortUrl } from "./youtubeEmbeds";
 import { buildTweetMediaProxyUrl } from "./tweetMedia";
-import { buildVideoEmbedSource } from "./mediaEmbeds";
+import { buildVideoEmbedSource, isLocalMediaUrl } from "./mediaEmbeds";
 import { buildFallbackTweetPreview, fetchTweetPreview, extractTweetUrls, rewriteTweetUrlToFxTwitter, splitTweetText } from "./tweetEmbeds";
 import { deriveRoomFingerprint, normalizeFingerprint } from "./fingerprint";
 import { shouldNotifyIncomingMessage } from "./notifications";
@@ -287,8 +287,6 @@ type RelatedTweetBlockProps = {
   label: string;
   tweet: ResolvedTweetPreview["reply"];
   kind: "reply" | "quote" | "retweet";
-  onCopy: (value: string) => void;
-  copiedLink: string | null;
   getProfileUrl: (handle: string) => string;
   formatRelatedDate: (value?: string) => string | null;
   renderTweetText: (value: string, prefix: string) => React.ReactNode;
@@ -306,12 +304,87 @@ function getAvatarFallback(name: string, handle: string) {
   return (initials || handle.slice(0, 2) || "??").toUpperCase();
 }
 
+function TweetTextBlock({
+  text,
+  translationText,
+  prefix,
+  renderTweetText,
+}: {
+  text: string;
+  translationText?: string;
+  prefix: string;
+  renderTweetText: (value: string, prefix: string) => React.ReactNode;
+}) {
+  const originalText = text.trim();
+  const englishText = translationText?.trim();
+  const hasTranslation = Boolean(originalText && englishText);
+  const [showTranslation, setShowTranslation] = useState(Boolean(englishText));
+  const [expanded, setExpanded] = useState(false);
+  const [canExpand, setCanExpand] = useState(false);
+  const measureRef = useRef<HTMLParagraphElement | null>(null);
+
+  useEffect(() => {
+    setShowTranslation(Boolean(englishText));
+  }, [englishText, originalText]);
+
+  useEffect(() => {
+    setExpanded(false);
+  }, [showTranslation, originalText, englishText]);
+
+  const activeText = showTranslation && englishText ? englishText : originalText || englishText || "";
+
+  useEffect(() => {
+    const element = measureRef.current;
+    if (!element) return;
+
+    const updateExpansionState = () => {
+      setCanExpand(element.scrollHeight - element.clientHeight > 1);
+    };
+
+    updateExpansionState();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateExpansionState);
+      return () => window.removeEventListener("resize", updateExpansionState);
+    }
+
+    const observer = new ResizeObserver(() => updateExpansionState());
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [activeText]);
+
+  if (!activeText) return null;
+
+  return (
+    <div className="tweetTextBlock">
+      <p ref={measureRef} className="tweetTextClamped tweetTextMeasure" aria-hidden="true">
+        {renderTweetText(activeText, showTranslation ? `${prefix}-translation` : prefix)}
+      </p>
+      <p className={!expanded ? "tweetTextClamped" : undefined}>
+        {renderTweetText(activeText, showTranslation ? `${prefix}-translation` : prefix)}
+      </p>
+      {(hasTranslation || canExpand) && (
+        <div className="tweetTextActions">
+          {hasTranslation && (
+            <button className="tweetTranslationToggle" type="button" onClick={() => setShowTranslation((current) => !current)}>
+              Toggle translation
+            </button>
+          )}
+          {canExpand && (
+            <button className="tweetTranslationToggle" type="button" onClick={() => setExpanded((current) => !current)}>
+              {expanded ? "Collapse" : "Expand"}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RelatedTweetBlock({
   label,
   tweet,
   kind,
-  onCopy,
-  copiedLink,
   getProfileUrl,
   formatRelatedDate,
   renderTweetText,
@@ -320,7 +393,6 @@ function RelatedTweetBlock({
   if (!tweet) return null;
 
   const openLabel = `Open ${label.toLowerCase()}`;
-  const copyLabel = `Copy ${label.toLowerCase()} link`;
   const className = kind === "reply" ? "tweetReply" : kind === "quote" ? "tweetQuote" : "tweetRetweet";
   const relatedDate = formatRelatedDate(tweet.createdAt);
 
@@ -345,17 +417,8 @@ function RelatedTweetBlock({
         <a className="tweetMiniOpen" href={tweet.url} target="_blank" rel="noreferrer" aria-label={openLabel}>
           <ExternalLink size={14} />
         </a>
-        <button
-          className="tweetMiniOpen"
-          type="button"
-          onClick={() => onCopy(tweet.url)}
-          aria-label={copyLabel}
-          title={copiedLink === tweet.url ? "Copied" : copyLabel}
-        >
-          {copiedLink === tweet.url ? <CheckCheck size={14} /> : <Copy size={14} />}
-        </button>
       </div>
-      {tweet.text.trim() && <p>{renderTweetText(tweet.text, kind)}</p>}
+      <TweetTextBlock text={tweet.text} translationText={tweet.translationText} prefix={kind} renderTweetText={renderTweetText} />
       {tweet.media.length > 0 && (
         <div className={`tweetMediaGrid count-${Math.min(tweet.media.length, 4)}`}>{renderTweetMedia(tweet.media, kind)}</div>
       )}
@@ -486,27 +549,27 @@ function renderVideoEmbed({
 function TweetEmbed({ url, onOpenImage }: { url: string; onOpenImage: (url: string, alt: string) => void }) {
   const [preview, setPreview] = useState<ResolvedTweetPreview>(() => buildFallbackTweetPreview(url)!);
   const [avatarBroken, setAvatarBroken] = useState(false);
-  const [copiedLink, setCopiedLink] = useState<string | null>(null);
-  const copiedTimer = useRef<number | null>(null);
   const getProfileUrl = (handle: string) => `https://fxtwitter.com/${handle}`;
+  const formatCondensedDate = (parsed: Date) => {
+    const year = String(parsed.getFullYear());
+    const month = String(parsed.getMonth() + 1).padStart(2, "0");
+    const day = String(parsed.getDate()).padStart(2, "0");
+    const hours24 = parsed.getHours();
+    const hours12 = hours24 % 12 || 12;
+    const minutes = String(parsed.getMinutes()).padStart(2, "0");
+    const meridiem = hours24 >= 12 ? "pm" : "am";
+    return `${year}/${month}/${day} | ${hours12}:${minutes} ${meridiem}`;
+  };
   const tweetDate = useMemo(() => {
     if (!preview?.createdAt) return null;
     const parsed = new Date(preview.createdAt);
-    return Number.isNaN(parsed.getTime())
-      ? null
-      : new Intl.DateTimeFormat(undefined, {
-          dateStyle: "medium",
-          timeStyle: "short",
-        }).format(parsed);
+    return Number.isNaN(parsed.getTime()) ? null : formatCondensedDate(parsed);
   }, [preview?.createdAt]);
   const formatRelatedDate = (value?: string) => {
     if (!value) return null;
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) return null;
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(parsed);
+    return formatCondensedDate(parsed);
   };
   const renderTweetText = (value: string, prefix: string) =>
     splitTweetText(value).map((token, index) =>
@@ -551,37 +614,6 @@ function TweetEmbed({ url, onOpenImage }: { url: string; onOpenImage: (url: stri
       )
       );
     });
-  const copyLink = (value: string) => {
-    void (async () => {
-      try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(value);
-        } else {
-          const textarea = document.createElement("textarea");
-          textarea.value = value;
-          textarea.setAttribute("readonly", "true");
-          textarea.style.position = "fixed";
-          textarea.style.top = "-9999px";
-          textarea.style.left = "-9999px";
-          document.body.appendChild(textarea);
-          textarea.select();
-          document.execCommand("copy");
-          document.body.removeChild(textarea);
-        }
-        setCopiedLink(value);
-        if (copiedTimer.current) {
-          window.clearTimeout(copiedTimer.current);
-        }
-        copiedTimer.current = window.setTimeout(() => {
-          setCopiedLink((current) => (current === value ? null : current));
-          copiedTimer.current = null;
-        }, 1200);
-      } catch {
-        // Ignore clipboard failures.
-      }
-    })();
-  };
-
   useEffect(() => {
     let cancelled = false;
     setPreview(buildFallbackTweetPreview(url)!);
@@ -599,9 +631,6 @@ function TweetEmbed({ url, onOpenImage }: { url: string; onOpenImage: (url: stri
 
     return () => {
       cancelled = true;
-      if (copiedTimer.current) {
-        window.clearTimeout(copiedTimer.current);
-      }
     };
   }, [url]);
 
@@ -630,22 +659,11 @@ function TweetEmbed({ url, onOpenImage }: { url: string; onOpenImage: (url: stri
         <a className="tweetOpen" href={preview.url} target="_blank" rel="noreferrer" aria-label="Open tweet">
           <ExternalLink size={16} />
         </a>
-        <button
-          className="tweetMiniOpen"
-          type="button"
-          onClick={() => copyLink(preview.url)}
-          aria-label="Copy tweet link"
-          title={copiedLink === preview.url ? "Copied" : "Copy tweet link"}
-        >
-          {copiedLink === preview.url ? <CheckCheck size={14} /> : <Copy size={14} />}
-        </button>
       </header>
       <RelatedTweetBlock
         label="Reply"
         tweet={preview.reply}
         kind="reply"
-        onCopy={copyLink}
-        copiedLink={copiedLink}
         getProfileUrl={getProfileUrl}
         formatRelatedDate={formatRelatedDate}
         renderTweetText={renderTweetText}
@@ -655,8 +673,6 @@ function TweetEmbed({ url, onOpenImage }: { url: string; onOpenImage: (url: stri
         label="Quoted tweet"
         tweet={preview.quote}
         kind="quote"
-        onCopy={copyLink}
-        copiedLink={copiedLink}
         getProfileUrl={getProfileUrl}
         formatRelatedDate={formatRelatedDate}
         renderTweetText={renderTweetText}
@@ -666,18 +682,14 @@ function TweetEmbed({ url, onOpenImage }: { url: string; onOpenImage: (url: stri
         label="Retweet"
         tweet={preview.retweet}
         kind="retweet"
-        onCopy={copyLink}
-        copiedLink={copiedLink}
         getProfileUrl={getProfileUrl}
         formatRelatedDate={formatRelatedDate}
         renderTweetText={renderTweetText}
         renderTweetMedia={renderTweetMedia}
       />
-      {preview.text.trim() && (
-        <div className="tweetBody">
-          <p>{renderTweetText(preview.text, "tweet")}</p>
-        </div>
-      )}
+      <div className="tweetBody">
+        <TweetTextBlock text={preview.text} translationText={preview.translationText} prefix="tweet" renderTweetText={renderTweetText} />
+      </div>
       {preview.media.length > 0 && (
         <div className={`tweetMediaGrid count-${Math.min(preview.media.length, 4)}`}>{renderTweetMedia(preview.media, "tweet")}</div>
       )}
@@ -719,6 +731,8 @@ type Modal =
   | "channel"
   | "rename-channel"
   | "delete-channel"
+  | "voice-channel"
+  | "delete-voice-channel"
   | "edit-message"
   | "delete-message"
   | "search"
@@ -756,8 +770,8 @@ const APP_THEMES = [
 ] as const;
 type AppTheme = (typeof APP_THEMES)[number]["id"];
 
-const voiceRooms = ["war room", "release desk", "pairing"];
-const baseMembers = ["You", "Ada", "Linus", "Grace", "Katherine"];
+const DEFAULT_VOICE_ROOMS = ["war room", "release desk", "pairing"];
+const baseMembers = ["Ada", "Linus", "Grace", "Katherine"];
 const defaultRecentEmojis = ["👍", "🔥", "😂", "❤️", "🚀", "👀", "✅", "🙌"];
 const emojiGroups = [
   {
@@ -789,6 +803,8 @@ type StoredSettings = {
   serverSubtitles?: Record<string, string>;
   activeVoiceRoom?: string | null;
   channels?: typeof DEFAULT_CHANNELS;
+  channelChildren?: Record<string, string[]>;
+  voiceRooms?: typeof DEFAULT_VOICE_ROOMS;
   xmppWebSocketUrl?: string;
   xmppJid?: string;
   xmppPassword?: string;
@@ -938,6 +954,8 @@ function App() {
   const [newServerName, setNewServerName] = useState(storedSettings.newServerName ?? "");
   const [newServerSubtitle, setNewServerSubtitle] = useState(storedSettings.newServerSubtitle ?? "");
   const [channels, setChannels] = useState(storedSettings.channels ?? DEFAULT_CHANNELS);
+  const [channelChildren, setChannelChildren] = useState<Record<string, string[]>>(storedSettings.channelChildren ?? {});
+  const [voiceRooms, setVoiceRooms] = useState(storedSettings.voiceRooms ?? DEFAULT_VOICE_ROOMS);
   const [xmppWebSocketUrl, setXmppWebSocketUrl] = useState(storedSettings.xmppWebSocketUrl ?? "");
   const [xmppJid, setXmppJid] = useState(storedSettings.xmppJid ?? "");
   const [xmppPassword, setXmppPassword] = useState(storedSettings.xmppPassword ?? "");
@@ -959,10 +977,15 @@ function App() {
       storedSettings.name ?? DEFAULT_NAME,
     ),
   );
+  const [xmppConnectNonce, setXmppConnectNonce] = useState(0);
   const [xmppInviteUri, setXmppInviteUri] = useState("");
   const [newChannelName, setNewChannelName] = useState(storedSettings.newChannelName ?? "");
+  const [newSubchannelName, setNewSubchannelName] = useState("");
+  const [channelCreateKind, setChannelCreateKind] = useState<"text" | "voice">("text");
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
   const [deletingChannelId, setDeletingChannelId] = useState<string | null>(null);
+  const [editingVoiceRoom, setEditingVoiceRoom] = useState<string | null>(null);
+  const [deletingVoiceRoom, setDeletingVoiceRoom] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const [selectedMember, setSelectedMember] = useState<string | null>(null);
@@ -1037,6 +1060,7 @@ function App() {
   } | null>(null);
   const [pendingAttachmentChannel, setPendingAttachmentChannel] = useState<string>(activeChannel);
   const [pendingAttachmentPaneIndex, setPendingAttachmentPaneIndex] = useState<number | null>(null);
+  const [voiceRecording, setVoiceRecording] = useState<{ channelId: string; paneIndex: number | null } | null>(null);
   const [notificationsMuted, setNotificationsMuted] = useState(storedSettings.notificationsMuted ?? false);
   const [membersOpen, setMembersOpen] = useState(storedSettings.membersOpen ?? true);
   const [callActive, setCallActive] = useState(false);
@@ -1112,18 +1136,113 @@ function App() {
   const [gifFavorites, setGifFavorites] = useState<string[]>(storedSettings.gifFavorites ?? []);
   const [cameraActive, setCameraActive] = useState(false);
   const activeServerSubtitle = serverSubtitles[activeServer]?.trim() || DEFAULT_SERVER_SUBTITLE;
+  const localMemberName = name.trim() || DEFAULT_NAME;
+  const selectedMemberIsLocal = selectedMember === localMemberName || selectedMember === "You";
+  const selectedMemberIsPeer = selectedMember === peerName;
   const memberRoster = useMemo(() => {
     const roomMembers = Object.values(xmppRoomOccupants)
       .sort((left, right) => Number(Boolean(right.self)) - Number(Boolean(left.self)) || left.nick.localeCompare(right.nick))
-      .map((occupant) => (occupant.self ? "You" : occupant.nick));
+      .map((occupant) => (occupant.self ? localMemberName : occupant.nick));
 
     if (roomMembers.length > 0) {
       return Array.from(new Set(roomMembers));
     }
 
-    if (!peerName.trim() || baseMembers.includes(peerName)) return baseMembers;
-    return [baseMembers[0], peerName, ...baseMembers.slice(1)];
-  }, [peerName, xmppRoomOccupants]);
+    const fallbackMembers = [localMemberName, ...baseMembers];
+    if (!peerName.trim() || fallbackMembers.includes(peerName)) return fallbackMembers;
+    return [localMemberName, peerName, ...baseMembers];
+  }, [localMemberName, peerName, xmppRoomOccupants]);
+  const nestedChannelIds = useMemo(
+    () => new Set(Object.values(channelChildren).flat()),
+    [channelChildren],
+  );
+  const topLevelChannels = useMemo(
+    () => channels.filter((channel) => !nestedChannelIds.has(channel.id)),
+    [channels, nestedChannelIds],
+  );
+  const voiceRoomMembers = useMemo(() => {
+    if (!activeVoiceRoom) return [];
+
+    const nextMembers: Array<{
+      id: string;
+      name: string;
+      avatarUrl: string;
+      avatarFrameUrl: string;
+      speaking: boolean;
+    }> = [];
+    const seen = new Set<string>();
+    const addMember = (member: {
+      id: string;
+      name: string;
+      avatarUrl: string;
+      avatarFrameUrl: string;
+      speaking: boolean;
+    }) => {
+      if (seen.has(member.id)) return;
+      seen.add(member.id);
+      nextMembers.push(member);
+    };
+
+    addMember({
+      id: localMemberName,
+      name: localMemberName,
+      avatarUrl,
+      avatarFrameUrl,
+      speaking: callActive && !micMuted && localAudioLevel > 12,
+    });
+
+    if (peerName.trim()) {
+      addMember({
+        id: peerName,
+        name: peerName,
+        avatarUrl: peerAvatarUrl,
+        avatarFrameUrl: peerAvatarFrameUrl,
+        speaking: peerCallActive && !peerMicMuted && peerAudioLevel > 12,
+      });
+    }
+
+    Object.values(xmppRoomOccupants).forEach((occupant) => {
+      const name = occupant.self ? localMemberName : occupant.nick;
+      if (!name.trim()) return;
+      addMember({
+        id: name,
+        name,
+        avatarUrl: name === localMemberName ? avatarUrl : name === peerName ? peerAvatarUrl : "",
+        avatarFrameUrl: name === localMemberName ? avatarFrameUrl : name === peerName ? peerAvatarFrameUrl : "",
+        speaking: false,
+      });
+    });
+
+    return nextMembers;
+  }, [
+    activeVoiceRoom,
+    avatarFrameUrl,
+    avatarUrl,
+    callActive,
+    localAudioLevel,
+    localMemberName,
+    micMuted,
+    peerAudioLevel,
+    peerAvatarFrameUrl,
+    peerAvatarUrl,
+    peerCallActive,
+    peerMicMuted,
+    peerName,
+    xmppRoomOccupants,
+  ]);
+  const messageAvatarByAuthor = useMemo(() => {
+    const avatars = new Map<string, string>();
+    const addAvatar = (memberName: string, url: string) => {
+      const key = memberName.trim().toLowerCase();
+      if (!key || !url.trim() || avatars.has(key)) return;
+      avatars.set(key, url);
+    };
+
+    addAvatar(localMemberName, avatarUrl);
+    addAvatar(peerName, peerAvatarUrl);
+    voiceRoomMembers.forEach((member) => addAvatar(member.name, member.avatarUrl));
+    return avatars;
+  }, [avatarUrl, localMemberName, peerAvatarUrl, peerName, voiceRoomMembers]);
   const draft = getChannelDraft(draftByChannel, activeChannel);
   const replyToMessageId = getReplyTarget(replyTargetByChannel, activeChannel);
   const focusedComposerChannel = composerTargetChannel || activeChannel;
@@ -1146,6 +1265,9 @@ function App() {
   const reactionPickerSlotRef = useRef<HTMLDivElement | null>(null);
   const messageMenuRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const voiceRecorderRef = useRef<MediaRecorder | null>(null);
+  const voiceRecordingStreamRef = useRef<MediaStream | null>(null);
+  const voiceRecordingChunksRef = useRef<Blob[]>([]);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
   const avatarUploadRef = useRef<HTMLInputElement | null>(null);
   const bannerUploadRef = useRef<HTMLInputElement | null>(null);
@@ -1159,8 +1281,8 @@ function App() {
   const localCameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const localScreenVideoRef = useRef<HTMLVideoElement | null>(null);
   const localAudioContextRef = useRef<AudioContext | null>(null);
-  const peerAudioContextRef = useRef<AudioContext | null>(null);
   const localAudioFrameRef = useRef<number | null>(null);
+  const peerAudioContextRef = useRef<AudioContext | null>(null);
   const peerAudioFrameRef = useRef<number | null>(null);
   const renegotiatingRef = useRef(false);
   const attachmentTransfersRef = useRef<Map<string, AttachmentTransfer>>(new Map());
@@ -1264,7 +1386,15 @@ function App() {
   const chatInspectorMessage = selectedSearchMessage ?? visibleMessages[visibleMessages.length - 1] ?? null;
   const chatInspectorPinnedCount = visibleMessages.filter((message) => message.pinned).length;
   const deletingChannel = channels.find((channel) => channel.id === deletingChannelId);
-  const deleteFallbackChannel = channels.find((channel) => channel.id !== deletingChannelId) ?? channels[0];
+  const deletingChannelParentId = deletingChannelId?.includes(":")
+    ? deletingChannelId.slice(0, deletingChannelId.lastIndexOf(":"))
+    : null;
+  const deleteFallbackChannel =
+    (deletingChannelParentId ? channels.find((channel) => channel.id === deletingChannelParentId) : null) ??
+    channels.find((channel) => channel.id !== deletingChannelId && !channel.id.includes(":")) ??
+    channels.find((channel) => channel.id !== deletingChannelId) ??
+    channels[0];
+  const deleteFallbackVoiceRoom = voiceRooms.find((room) => room !== deletingVoiceRoom) ?? voiceRooms[0];
   const pendingAttachmentTargetLabel =
     pendingAttachmentPaneIndex === null
       ? `#${getChannelLabel(pendingAttachmentChannel || activeChannel)}`
@@ -1283,6 +1413,10 @@ function App() {
       if (draftSyncTimerRef.current !== null) {
         window.clearTimeout(draftSyncTimerRef.current);
       }
+      if (voiceRecorderRef.current && voiceRecorderRef.current.state !== "inactive") {
+        voiceRecorderRef.current.stop();
+      }
+      voiceRecordingStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
 
@@ -1305,6 +1439,8 @@ function App() {
         activeChannelsByServer,
         serverSubtitles,
         channels,
+        channelChildren,
+        voiceRooms,
         xmppWebSocketUrl,
         xmppJid,
         xmppPassword,
@@ -1391,6 +1527,8 @@ function App() {
     mainTab,
     events,
     channels,
+    channelChildren,
+    voiceRooms,
     xmppWebSocketUrl,
     xmppJid,
     xmppPassword,
@@ -1497,12 +1635,32 @@ function App() {
     setXmppSelfNick("");
 
     if (!websocketUrl || !jid || !password || (!room && (!spaceServiceJid || !spaceNode))) {
-      setXmppStatus("disabled");
+      if (xmppConnectNonce > 0) setXmppStatus("disabled");
       return undefined;
     }
 
     let cancelled = false;
     setXmppStatus("connecting");
+
+    const describeXmppFailure = (value: unknown): string => {
+      const muc = (value as { muc?: Record<string, unknown> } | null)?.muc ?? {};
+      if (muc.passwordRequired) return "password required";
+      if (muc.roomNotFound) return "room not found";
+      if (muc.forbidden) return "forbidden";
+      if (muc.conflict) return "nickname conflict";
+
+      const stanzaError = (value as { error?: { condition?: string; text?: string } } | null)?.error;
+      const condition = stanzaError?.condition;
+      if (condition === "item-not-found") return "room not found";
+      if (condition === "not-authorized") return "password required";
+      if (condition === "forbidden") return "forbidden";
+      if (condition) return condition;
+      if (stanzaError?.text) return stanzaError.text;
+
+      if (value instanceof Error && value.message) return value.message;
+      if (typeof value === "string" && value.trim()) return value;
+      return "unknown error";
+    };
 
     const client = XMPP.createClient({
       jid,
@@ -1546,8 +1704,7 @@ function App() {
         }
       } catch (error) {
         if (!cancelled) setXmppStatus("failed");
-        const detail =
-          error instanceof Error ? error.message : typeof error === "string" ? error : "unknown error";
+        const detail = describeXmppFailure(error);
         log(spaceServiceJid && spaceNode ? `Could not join the XMPP space: ${detail}.` : `Could not join the XMPP room: ${detail}.`);
       }
     });
@@ -1559,17 +1716,7 @@ function App() {
 
     client.on("muc:failed", (presence) => {
       if (!cancelled) {
-        const muc = (presence as any)?.muc ?? {};
-        const reason = muc.passwordRequired
-          ? "password required"
-          : muc.roomNotFound
-            ? "room not found"
-          : muc.forbidden
-            ? "forbidden"
-          : muc.conflict
-            ? "nickname conflict"
-            : "unknown";
-        log(`MUC join failed: ${reason}.`);
+        log(`MUC join failed: ${describeXmppFailure(presence)}.`);
       }
     });
 
@@ -1665,11 +1812,15 @@ function App() {
     client.on("--transport-disconnected", () => {
       if (!cancelled) log("XMPP transport disconnected.");
     });
-    client.on("stanza:failed", () => {
-      if (!cancelled) log("XMPP stanza failed.");
+    client.on("stanza:failed", (...args) => {
+      if (!cancelled) log(`XMPP stanza failed: ${args.map((arg) => describeDebugValue(arg)).join(" | ") || "unknown"}.`);
     });
-    client.on("muc:error", () => {
-      if (!cancelled) setXmppStatus("failed");
+    client.on("muc:error", (...args) => {
+      if (!cancelled) {
+        setXmppStatus("failed");
+        const detail = args.map((arg) => describeXmppFailure(arg)).find((entry) => entry !== "unknown error") ?? "unknown";
+        log(`MUC error: ${detail}.`);
+      }
     });
 
     void client.connect();
@@ -1678,7 +1829,7 @@ function App() {
       cancelled = true;
       client.disconnect();
     };
-  }, [xmppConnectionSettings]);
+  }, [xmppConnectNonce]);
 
   useEffect(() => {
     if (prevXmppStatusRef.current === xmppStatus) return;
@@ -1687,11 +1838,21 @@ function App() {
   }, [xmppStatus]);
 
   useEffect(() => {
+    if (mainTab !== "chat") {
+      const list = messageListRef.current;
+      if (list) {
+        channelScrollPositionsRef.current[activeChannel] = list.scrollTop;
+        setFollowLatest(isNearBottom(list.scrollTop, list.clientHeight, list.scrollHeight));
+      }
+      restoredScrollChannelRef.current = null;
+      return;
+    }
+
     const list = messageListRef.current;
     if (!list) return;
 
-    if (restoredScrollChannelRef.current !== activeChannel) {
-      restoredScrollChannelRef.current = activeChannel;
+    if (restoredScrollChannelRef.current !== `${mainTab}:${activeChannel}`) {
+      restoredScrollChannelRef.current = `${mainTab}:${activeChannel}`;
       const savedScrollTop = channelScrollPositionsRef.current[activeChannel];
       requestAnimationFrame(() => {
         const nextScrollTop = savedScrollTop ?? list.scrollHeight;
@@ -1702,7 +1863,7 @@ function App() {
     }
 
     if (followLatest) list.scrollTop = list.scrollHeight;
-  }, [activeChannel, followLatest, visibleMessages.length]);
+  }, [activeChannel, followLatest, mainTab, visibleMessages.length]);
 
   useEffect(() => {
     if (chatPaneMode !== "split") return;
@@ -2083,8 +2244,8 @@ function App() {
     return () => {
       stopLocalMedia();
       clearRemoteMedia();
-      stopAudioMeter("local");
-      stopAudioMeter("peer");
+      stopAudioMeter();
+      stopAudioMeter(peerAudioContextRef, peerAudioFrameRef, setPeerAudioLevel);
       revokeAttachmentUrls();
       pcRef.current?.close();
       channelRef.current?.close();
@@ -2116,13 +2277,13 @@ function App() {
   }, [remoteVideoActive]);
 
   useEffect(() => {
-    driveAudioMeter(micStreamRef.current, "local");
-    return () => stopAudioMeter("local");
+    driveAudioMeter(micStreamRef.current);
+    return () => stopAudioMeter();
   }, [callActive, micMuted]);
 
   useEffect(() => {
-    driveAudioMeter(remoteStreamRef.current, "peer");
-    return () => stopAudioMeter("peer");
+    driveAudioMeter(remoteMediaActive ? remoteStreamRef.current : null, peerAudioContextRef, peerAudioFrameRef, setPeerAudioLevel);
+    return () => stopAudioMeter(peerAudioContextRef, peerAudioFrameRef, setPeerAudioLevel);
   }, [remoteMediaActive]);
 
   useEffect(() => {
@@ -2140,9 +2301,11 @@ function App() {
     setRemoteVideoActive(remoteStreamRef.current.getVideoTracks().some((track) => track.readyState === "live"));
   }
 
-  function stopAudioMeter(kind: "local" | "peer") {
-    const contextRef = kind === "local" ? localAudioContextRef : peerAudioContextRef;
-    const frameRef = kind === "local" ? localAudioFrameRef : peerAudioFrameRef;
+  function stopAudioMeter(
+    contextRef = localAudioContextRef,
+    frameRef = localAudioFrameRef,
+    setLevel = setLocalAudioLevel,
+  ) {
     const context = contextRef.current;
     if (frameRef.current !== null) {
       cancelAnimationFrame(frameRef.current);
@@ -2152,16 +2315,16 @@ function App() {
       void context.close().catch(() => undefined);
       contextRef.current = null;
     }
-    if (kind === "local") setLocalAudioLevel(0);
-    else setPeerAudioLevel(0);
+    setLevel(0);
   }
 
-  function driveAudioMeter(stream: MediaStream | null, kind: "local" | "peer") {
-    const contextRef = kind === "local" ? localAudioContextRef : peerAudioContextRef;
-    const frameRef = kind === "local" ? localAudioFrameRef : peerAudioFrameRef;
-    const setLevel = kind === "local" ? setLocalAudioLevel : setPeerAudioLevel;
-
-    stopAudioMeter(kind);
+  function driveAudioMeter(
+    stream: MediaStream | null,
+    contextRef = localAudioContextRef,
+    frameRef = localAudioFrameRef,
+    setLevel = setLocalAudioLevel,
+  ) {
+    stopAudioMeter(contextRef, frameRef, setLevel);
     if (!stream || stream.getAudioTracks().length === 0) return;
 
     const context = new AudioContext();
@@ -2190,6 +2353,12 @@ function App() {
   function clearEventLog() {
     setEvents([]);
   }
+
+  useEffect(() => {
+    const startedAt = new Date();
+    const stamp = `${startedAt.getFullYear()}/${String(startedAt.getMonth() + 1).padStart(2, "0")}/${String(startedAt.getDate()).padStart(2, "0")} ${String(startedAt.getHours()).padStart(2, "0")}:${String(startedAt.getMinutes()).padStart(2, "0")}:${String(startedAt.getSeconds()).padStart(2, "0")}`;
+    log(`App session started: ${stamp}.`);
+  }, []);
 
   function addSystemMessage(body: string, channel = activeChannel, attachment?: ChatMessage["attachment"]) {
     setMessages((current) => [
@@ -2287,17 +2456,6 @@ function App() {
     setMessageMenuMessageId(null);
   }
 
-  function openSessionTab() {
-    setMainTab("session");
-    setModal(null);
-    setEmojiOpen(false);
-    setGifOpen(false);
-    setGifQuery("");
-    setGifTab("all");
-    setReactionPickerMessageId(null);
-    setMessageMenuMessageId(null);
-  }
-
   function stepSearch(direction: 1 | -1) {
     if (!searchActive || searchMatches.length === 0) return;
     setSearchIndex((current) => (current + direction + searchMatches.length) % searchMatches.length);
@@ -2384,11 +2542,32 @@ function App() {
     }
   }
 
+  const MAX_XMPP_PAYLOAD_CHARS = 48_000;
+
+  function summarizeDebugString(value: string, limit = 240) {
+    return value.length > limit ? `${value.slice(0, limit)}...[${value.length} chars]` : value;
+  }
+
+  function sanitizeDebugBody(value: string) {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return sanitizeDebugValue(parsed);
+    } catch {
+      return summarizeDebugString(value);
+    }
+  }
+
   async function sendXmppEncryptedPayload(encrypted: WireMessage) {
     const client = xmppClientRef.current;
     const room = xmppRoomRef.current?.trim();
     const space = xmppSpaceRef.current;
     if (!client || xmppStatus !== "connected") return false;
+
+    const payload = JSON.stringify(encrypted);
+    if (payload.length > MAX_XMPP_PAYLOAD_CHARS) {
+      log(`XMPP payload too large to send live (${payload.length} chars).`);
+      return false;
+    }
 
     try {
       if (space) {
@@ -2405,7 +2584,7 @@ function App() {
       client.sendMessage({
         to: room,
         type: "groupchat",
-        body: JSON.stringify(encrypted),
+        body: payload,
       });
       return true;
     } catch {
@@ -2421,6 +2600,8 @@ function App() {
       serverSubtitles,
       activeVoiceRoom,
       channels,
+      channelChildren,
+      voiceRooms,
       iceServersText,
       membersOpen,
       notificationsMuted,
@@ -2472,6 +2653,33 @@ function App() {
     };
   }
 
+  function sanitizeDebugValue(value: unknown, seen = new WeakSet<object>()): unknown {
+    if (typeof value === "string") return summarizeDebugString(value);
+    if (typeof value === "number" || typeof value === "boolean" || value == null) return value;
+    if (Array.isArray(value)) return value.map((entry) => sanitizeDebugValue(entry, seen));
+    if (typeof value !== "object") return String(value);
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+
+    const entries = Object.entries(value as Record<string, unknown>).map(([key, entry]) => {
+      if (key === "ciphertext" || key === "iv") return [key, "[redacted]"];
+      if (key === "body" && typeof entry === "string") return [key, sanitizeDebugBody(entry)];
+      return [key, sanitizeDebugValue(entry, seen)];
+    });
+    return Object.fromEntries(entries);
+  }
+
+  function describeDebugValue(value: unknown) {
+    if (value instanceof Error) return `${value.name}: ${value.message}`;
+    if (typeof value === "string") return summarizeDebugString(value);
+    if (typeof value === "number" || typeof value === "boolean" || value == null) return String(value);
+    try {
+      return JSON.stringify(sanitizeDebugValue(value));
+    } catch {
+      return Object.prototype.toString.call(value);
+    }
+  }
+
   function hydrateAttachmentUrls(nextMessages: ChatMessage[]) {
     return nextMessages.map((message) => {
       if (!message.attachment?.dataUrl || message.attachment.objectUrl) return message;
@@ -2490,6 +2698,8 @@ function App() {
   function applyImportedWorkspace(settings: WorkspaceBackupSettings, importedMessages: ChatMessage[]) {
     const nextServers = settings.servers?.length ? settings.servers : servers.length ? servers : [activeServer];
     const nextChannels = settings.channels?.length ? settings.channels : channels.length ? channels : DEFAULT_CHANNELS;
+    const nextVoiceRooms = settings.voiceRooms?.length ? settings.voiceRooms : voiceRooms.length ? voiceRooms : DEFAULT_VOICE_ROOMS;
+    const nextChannelChildren = settings.channelChildren ?? channelChildren;
     const nextActiveServer =
       settings.activeServer && nextServers.includes(settings.activeServer) ? settings.activeServer : nextServers[0];
     const channelMap = settings.activeChannelsByServer ?? {};
@@ -2507,6 +2717,8 @@ function App() {
     setServers(nextServers);
     setServerSubtitles(settings.serverSubtitles ?? {});
     setChannels(nextChannels);
+    setChannelChildren(nextChannelChildren);
+    setVoiceRooms(nextVoiceRooms);
     setActiveServer(nextActiveServer);
     setActiveChannelsByServer({
       ...nextActiveChannelsByServer,
@@ -2618,6 +2830,29 @@ function App() {
     };
   }
 
+  function formatVoiceAttachmentName(at: number, mimeType: string) {
+    const stamp = new Date(at);
+    const ext = mimeType.includes("ogg") ? "ogg" : mimeType.includes("mp4") ? "m4a" : "webm";
+    const date = `${stamp.getFullYear()}${String(stamp.getMonth() + 1).padStart(2, "0")}${String(stamp.getDate()).padStart(2, "0")}`;
+    const time = `${String(stamp.getHours()).padStart(2, "0")}${String(stamp.getMinutes()).padStart(2, "0")}${String(stamp.getSeconds()).padStart(2, "0")}`;
+    return `voice-note-${date}-${time}.${ext}`;
+  }
+
+  function chooseVoiceMimeType() {
+    if (typeof MediaRecorder === "undefined") return "";
+    const candidates = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm", "audio/ogg"];
+    return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? "";
+  }
+
+  async function blobToDataUrl(blob: Blob) {
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.addEventListener("load", () => resolve(String(reader.result)));
+      reader.addEventListener("error", () => reject(reader.error));
+      reader.readAsDataURL(blob);
+    });
+  }
+
   function revokeAttachmentUrls() {
     objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
     objectUrlsRef.current.clear();
@@ -2668,6 +2903,9 @@ function App() {
       membersOpen: boolean;
       activeServer: string;
       activeChannel: string;
+      activeVoiceRoom: string | null;
+      channelChildren: Record<string, string[]>;
+      voiceRooms: string[];
       avatarUrl: string;
       avatarFrameUrl: string;
       bannerUrl: string;
@@ -3120,10 +3358,31 @@ function App() {
   function createChannel() {
     const label = newChannelName.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-|-$/g, "");
     if (!label) return;
+    if (channelCreateKind === "voice") {
+      setVoiceRooms((current) => (current.includes(label) ? current : [...current, label]));
+      setActiveVoiceRoom(label);
+      log(`Created voice channel ${label}.`);
+      setNewChannelName("");
+      setChannelCreateKind("text");
+      setModal(null);
+      void sendProfileSync({
+        name: name || "Anonymous",
+        presence,
+        notificationsMuted,
+        membersOpen,
+        activeServer,
+        activeChannel,
+        activeVoiceRoom: label,
+        voiceRooms,
+      });
+      return;
+    }
+
     const channel = { id: label, label };
     setChannels((current) => (current.some((item) => item.id === channel.id) ? current : [...current, channel]));
     setActiveChannel(channel.id);
     setNewChannelName("");
+    setChannelCreateKind("text");
     setModal(null);
     log(`Created #${label}.`);
     void sendProfileSync({
@@ -3133,14 +3392,47 @@ function App() {
       membersOpen,
       activeServer,
       activeChannel: channel.id,
+      activeVoiceRoom,
     });
     void sendChannelSync({ action: "create", channelId: channel.id, label: channel.label });
+  }
+
+  function createTextSubchannel() {
+    const parent = editingChannelId;
+    const label = newSubchannelName.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-|-$/g, "");
+    if (!parent || !label) return;
+    const childId = `${parent}:${label}`;
+    if (channels.some((channel) => channel.id === childId)) return;
+
+    const nextChannelChildren = {
+      ...channelChildren,
+      [parent]: [...(channelChildren[parent] ?? []), childId],
+    };
+    const childChannel = { id: childId, label };
+
+    setChannels((current) => [...current, childChannel]);
+    setChannelChildren(nextChannelChildren);
+    setNewSubchannelName("");
+    log(`Created subchannel ${label} under ${parent}.`);
+    void sendProfileSync({
+      name: name || "Anonymous",
+      presence,
+      notificationsMuted,
+      membersOpen,
+      activeServer,
+      activeChannel,
+      activeVoiceRoom,
+      voiceRooms,
+      channelChildren: nextChannelChildren,
+    });
   }
 
   function closeModal() {
     setModal(null);
     setLightboxImage(null);
     setDeletingChannelId(null);
+    setEditingVoiceRoom(null);
+    setDeletingVoiceRoom(null);
     setEditingChannelId(null);
     setEditingMessageId(null);
     setDeletingMessageId(null);
@@ -3149,6 +3441,8 @@ function App() {
     setPendingAttachmentPaneIndex(null);
     setEmojiOpen(false);
     setReactionPickerMessageId(null);
+    setChannelCreateKind("text");
+    setNewSubchannelName("");
   }
 
   function saveEditedMessage() {
@@ -3208,23 +3502,60 @@ function App() {
     const current = channels.find((channel) => channel.id === editingChannelId);
     const label = newChannelName.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-|-$/g, "");
     if (!current || !label) return;
-    setChannels((items) => items.map((item) => (item.id === current.id ? { id: label, label } : item)));
-    setMessages((items) => items.map((message) => (message.channel === current.id ? { ...message, channel: label } : message)));
+    if (channels.some((item) => item.id === label && item.id !== current.id)) return;
+    const currentPrefix = `${current.id}:`;
+    const nextPrefix = `${label}:`;
+    const nextChannels = channels.map((item) => {
+      if (item.id === current.id) return { id: label, label };
+      if (item.id.startsWith(currentPrefix)) {
+        return { ...item, id: item.id.replace(currentPrefix, nextPrefix) };
+      }
+      return item;
+    });
+    const nextChannelChildren = { ...channelChildren };
+    const childIds = nextChannelChildren[current.id] ?? [];
+    delete nextChannelChildren[current.id];
+    if (childIds.length > 0) {
+      nextChannelChildren[label] = childIds.map((childId) => childId.replace(currentPrefix, nextPrefix));
+    }
+    for (const [parentId, childList] of Object.entries(nextChannelChildren)) {
+      nextChannelChildren[parentId] = childList.map((childId) => childId.replace(currentPrefix, nextPrefix));
+    }
+    setChannels(nextChannels);
+    setChannelChildren(nextChannelChildren);
+    setMessages((items) =>
+      items.map((message) => {
+        if (message.channel === current.id) return { ...message, channel: label };
+        if (message.channel.startsWith(currentPrefix)) return { ...message, channel: message.channel.replace(currentPrefix, nextPrefix) };
+        return message;
+      }),
+    );
     setDraftByChannel((currentDrafts) => moveChannelDraft(currentDrafts, current.id, label));
     setReplyTargetByChannel((currentTargets) => moveReplyTarget(currentTargets, current.id, label));
     setUnreadByChannel((counts) => moveUnreadCount(counts, current.id, label));
     setChatPaneChannels((currentChannels) =>
-      currentChannels.map((channelId) => (channelId === current.id ? label : channelId)),
+      currentChannels.map((channelId) => (channelId === current.id ? label : channelId.replace(currentPrefix, nextPrefix))),
     );
-    if (composerTargetChannel === current.id) setComposerTargetChannel(label);
-    if (pendingAttachmentChannel === current.id) setPendingAttachmentChannel(label);
-    if (pendingGifChannel === current.id) setPendingGifChannel(label);
+    if (composerTargetChannel === current.id || composerTargetChannel?.startsWith(currentPrefix)) {
+      setComposerTargetChannel(composerTargetChannel.replace(currentPrefix, nextPrefix));
+    }
+    if (pendingAttachmentChannel === current.id || pendingAttachmentChannel?.startsWith(currentPrefix)) {
+      setPendingAttachmentChannel(pendingAttachmentChannel.replace(currentPrefix, nextPrefix));
+    }
+    if (pendingGifChannel === current.id || pendingGifChannel?.startsWith(currentPrefix)) {
+      setPendingGifChannel(pendingGifChannel.replace(currentPrefix, nextPrefix));
+    }
     setActiveChannelsByServer((currentMap) =>
       Object.fromEntries(
-        Object.entries(currentMap).map(([server, channelId]) => [server, channelId === current.id ? label : channelId]),
+        Object.entries(currentMap).map(([server, channelId]) => [
+          server,
+          channelId === current.id ? label : channelId.replace(currentPrefix, nextPrefix),
+        ]),
       ),
     );
-    if (activeChannel === current.id) setActiveChannel(label);
+    if (activeChannel === current.id || activeChannel.startsWith(currentPrefix)) {
+      setActiveChannel(activeChannel.replace(currentPrefix, nextPrefix));
+    }
     setEditingChannelId(null);
     setNewChannelName("");
     setModal(null);
@@ -3235,36 +3566,118 @@ function App() {
       notificationsMuted,
       membersOpen,
       activeServer,
-      activeChannel: activeChannel === current.id ? label : activeChannel,
+      activeChannel: activeChannel === current.id ? label : activeChannel.replace(currentPrefix, nextPrefix),
+      channelChildren: nextChannelChildren,
     });
     void sendChannelSync({ action: "rename", channelId: current.id, label: current.label, nextChannelId: label, nextLabel: label });
+  }
+
+  function deleteVoiceRoom() {
+    if (!deletingVoiceRoom) return;
+
+    const room = deletingVoiceRoom;
+    const nextRoom = deleteFallbackVoiceRoom && deleteFallbackVoiceRoom !== room ? deleteFallbackVoiceRoom : null;
+    const nextVoiceRooms = voiceRooms.filter((item) => item !== room);
+    setVoiceRooms(nextVoiceRooms);
+    if (activeVoiceRoom === room || activeVoiceRoom?.startsWith(`${room}:`)) setActiveVoiceRoom(nextRoom);
+    setDeletingVoiceRoom(null);
+    setEditingVoiceRoom(null);
+    setModal(null);
+    log(`Deleted voice channel ${room}.`);
+    void sendProfileSync({
+      name: name || "Anonymous",
+      presence,
+      notificationsMuted,
+      membersOpen,
+      activeServer,
+      activeChannel,
+      activeVoiceRoom: nextRoom,
+      voiceRooms: nextVoiceRooms,
+    });
+  }
+
+  function saveVoiceRoom() {
+    const current = editingVoiceRoom;
+    const label = newChannelName.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-|-$/g, "");
+    if (!current || !label) return;
+    if (voiceRooms.some((item) => item === label && item !== current)) return;
+    const nextVoiceRooms = voiceRooms.map((item) => (item === current ? label : item));
+    setVoiceRooms(nextVoiceRooms);
+    if (activeVoiceRoom === current) {
+      setActiveVoiceRoom(label);
+    } else if (activeVoiceRoom?.startsWith(`${current}:`)) {
+      setActiveVoiceRoom(activeVoiceRoom.replace(`${current}:`, `${label}:`));
+    }
+    setEditingVoiceRoom(null);
+    setNewChannelName("");
+    setModal(null);
+    log(`Renamed voice channel ${current} to ${label}.`);
+    void sendProfileSync({
+      name: name || "Anonymous",
+      presence,
+      notificationsMuted,
+      membersOpen,
+      activeServer,
+      activeChannel,
+      activeVoiceRoom: activeVoiceRoom === current ? label : activeVoiceRoom,
+      voiceRooms: nextVoiceRooms,
+    });
   }
 
   function deleteChannel(channelId: string) {
     if (channels.length <= 1) return;
     const removed = channels.find((channel) => channel.id === channelId);
     if (!removed) return;
-    const remainingChannels = channels.filter((channel) => channel.id !== channelId);
-    const nextChannel = remainingChannels[0] ?? channels[0];
-    if (!nextChannel || nextChannel.id === channelId) return;
+    const prefix = `${channelId}:`;
+    const parentId = channelId.includes(":") ? channelId.slice(0, channelId.lastIndexOf(":")) : null;
+    const removedIds = channels
+      .filter((channel) => channel.id === channelId || channel.id.startsWith(prefix))
+      .map((channel) => channel.id);
+    const remainingChannels = channels.filter((channel) => !removedIds.includes(channel.id));
+    const nextChannel =
+      (parentId ? channels.find((channel) => channel.id === parentId) : null) ??
+      remainingChannels.find((channel) => !channel.id.includes(":")) ??
+      remainingChannels[0] ??
+      channels.find((channel) => channel.id !== channelId);
+    if (!nextChannel) return;
+    if (remainingChannels.length === 0) return;
+
+    const nextChannelChildren = Object.fromEntries(
+      Object.entries(channelChildren)
+        .filter(([parentId]) => !removedIds.includes(parentId))
+        .map(([parentId, childIds]) => [
+          parentId,
+          childIds.filter((childId) => !removedIds.includes(childId)),
+        ])
+        .filter(([, childIds]) => childIds.length > 0),
+    );
 
     setChannels(remainingChannels);
-    setMessages((items) => items.map((message) => (message.channel === channelId ? { ...message, channel: nextChannel.id } : message)));
-    setDraftByChannel((currentDrafts) => moveChannelDraft(currentDrafts, channelId, nextChannel.id));
-    setReplyTargetByChannel((currentTargets) => moveReplyTarget(currentTargets, channelId, nextChannel.id));
-    setUnreadByChannel((counts) => moveUnreadCount(counts, channelId, nextChannel.id));
-    setChatPaneChannels((currentChannels) =>
-      currentChannels.map((paneChannelId) => (paneChannelId === channelId ? nextChannel.id : paneChannelId)),
+    setChannelChildren(nextChannelChildren);
+    setMessages((items) =>
+      items.map((message) => (removedIds.includes(message.channel) ? { ...message, channel: nextChannel.id } : message)),
     );
-    if (composerTargetChannel === channelId) setComposerTargetChannel(nextChannel.id);
-    if (pendingAttachmentChannel === channelId) setPendingAttachmentChannel(nextChannel.id);
-    if (pendingGifChannel === channelId) setPendingGifChannel(nextChannel.id);
+    setDraftByChannel((currentDrafts) =>
+      removedIds.reduce((drafts, removedId) => moveChannelDraft(drafts, removedId, nextChannel.id), currentDrafts),
+    );
+    setReplyTargetByChannel((currentTargets) =>
+      removedIds.reduce((targets, removedId) => moveReplyTarget(targets, removedId, nextChannel.id), currentTargets),
+    );
+    setUnreadByChannel((counts) =>
+      removedIds.reduce((nextCounts, removedId) => moveUnreadCount(nextCounts, removedId, nextChannel.id), counts),
+    );
+    setChatPaneChannels((currentChannels) =>
+      currentChannels.map((paneChannelId) => (removedIds.includes(paneChannelId) ? nextChannel.id : paneChannelId)),
+    );
+    if (removedIds.includes(composerTargetChannel ?? "")) setComposerTargetChannel(nextChannel.id);
+    if (removedIds.includes(pendingAttachmentChannel ?? "")) setPendingAttachmentChannel(nextChannel.id);
+    if (removedIds.includes(pendingGifChannel ?? "")) setPendingGifChannel(nextChannel.id);
     setActiveChannelsByServer((currentMap) =>
       Object.fromEntries(
-        Object.entries(currentMap).map(([server, channel]) => [server, channel === channelId ? nextChannel.id : channel]),
+        Object.entries(currentMap).map(([server, channel]) => [server, removedIds.includes(channel) ? nextChannel.id : channel]),
       ),
     );
-    setActiveChannel((current) => (current === channelId ? nextChannel.id : current));
+    setActiveChannel((current) => (removedIds.includes(current) ? nextChannel.id : current));
     setDeletingChannelId(null);
     setModal(null);
     log(`Deleted #${removed.label}; moved its messages to #${nextChannel.label}.`);
@@ -3274,7 +3687,8 @@ function App() {
       notificationsMuted,
       membersOpen,
       activeServer,
-      activeChannel: activeChannel === channelId ? nextChannel.id : activeChannel,
+      activeChannel: removedIds.includes(activeChannel) ? nextChannel.id : activeChannel,
+      channelChildren: nextChannelChildren,
     });
     void sendChannelSync({
       action: "delete",
@@ -3575,9 +3989,17 @@ function App() {
       setModal(null);
       log("Settings saved.");
       void shareProfile();
+      return true;
     } catch (error) {
       log(error instanceof Error ? error.message : "Invalid settings.");
+      return false;
     }
+  }
+
+  function connectXmpp() {
+    if (!saveSettings()) return;
+    log("XMPP connect requested.");
+    setXmppConnectNonce((current) => current + 1);
   }
 
   function resetSettings() {
@@ -3615,7 +4037,13 @@ function App() {
     );
     setXmppStatus("disabled");
     setChannels(DEFAULT_CHANNELS);
+    setVoiceRooms(DEFAULT_VOICE_ROOMS);
+    setChannelChildren({});
     setNewChannelName("");
+    setNewSubchannelName("");
+    setChannelCreateKind("text");
+    setEditingVoiceRoom(null);
+    setDeletingVoiceRoom(null);
     setName(DEFAULT_NAME);
     setPresence(DEFAULT_PRESENCE);
     setAccentColor("#7c8cff");
@@ -4209,10 +4637,7 @@ function App() {
     return true;
   }
 
-  async function loadSelectedAttachment(files: FileList | null) {
-    const file = files?.[0];
-    if (!file) return;
-
+  async function loadAttachmentFile(file: File, fallbackName?: string) {
     const data = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.addEventListener("load", () => resolve(String(reader.result)));
@@ -4221,28 +4646,30 @@ function App() {
     });
 
     setPendingAttachment({
-      fileName: file.name,
+      fileName: file.name || fallbackName || "clipboard-image.png",
       mimeType: file.type || "application/octet-stream",
       size: file.size,
       dataUrl: data,
     });
-    log(`Selected attachment: ${file.name}.`);
+    log(`${fallbackName ? "Pasted" : "Selected"} attachment: ${file.name || fallbackName || "attachment"}.`);
+  }
+
+  async function loadSelectedAttachment(files: FileList | null) {
+    const file = files?.[0];
+    if (!file) return;
+
+    await loadAttachmentFile(file);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
-  async function sendPendingAttachment() {
-    if (!pendingAttachment) return;
-    const targetChannel = pendingAttachmentChannel || activeChannel;
-
+  async function sendPreparedAttachment(
+    nextAttachment: { fileName: string; mimeType: string; size: number; dataUrl: string },
+    targetChannel: string,
+  ) {
     const at = Date.now();
     const id = crypto.randomUUID();
     const attachment = {
-      ...makeAttachment(
-        pendingAttachment.fileName,
-        pendingAttachment.mimeType,
-        pendingAttachment.size,
-        pendingAttachment.dataUrl,
-      ),
+      ...makeAttachment(nextAttachment.fileName, nextAttachment.mimeType, nextAttachment.size, nextAttachment.dataUrl),
     };
 
     setMessages((current) => [
@@ -4259,9 +4686,7 @@ function App() {
       },
     ]);
 
-    setModal(null);
-    setPendingAttachment(null);
-    log(`Attachment queued: ${pendingAttachment.fileName}.`);
+    log(`Attachment queued: ${nextAttachment.fileName}.`);
 
     await sendAttachmentPayload({
       type: "attachment",
@@ -4269,13 +4694,127 @@ function App() {
       author: name || "Anonymous",
       channel: targetChannel,
       at,
-      fileName: pendingAttachment.fileName,
-      mimeType: pendingAttachment.mimeType,
-      size: pendingAttachment.size,
-      data: pendingAttachment.dataUrl,
+      fileName: nextAttachment.fileName,
+      mimeType: nextAttachment.mimeType,
+      size: nextAttachment.size,
+      data: nextAttachment.dataUrl,
     });
+  }
+
+  async function handleComposerPaste(
+    event: React.ClipboardEvent<HTMLTextAreaElement>,
+    channelId: string,
+    paneIndex: number | null,
+  ) {
+    const clipboardFile =
+      Array.from(event.clipboardData.files).find((file) => file.type.startsWith("image/")) ??
+      Array.from(event.clipboardData.items)
+        .map((item) => item.getAsFile())
+        .find((file): file is File => Boolean(file && file.type.startsWith("image/")));
+
+    if (!clipboardFile) return;
+
+    event.preventDefault();
+    setComposerTargetChannel(channelId);
+    setComposerTargetPaneIndex(paneIndex);
+    setPendingAttachmentChannel(channelId);
+    setPendingAttachmentPaneIndex(paneIndex);
+    await loadAttachmentFile(clipboardFile, "clipboard-image.png");
+    setModal("attachment");
+  }
+
+  async function sendPendingAttachment() {
+    if (!pendingAttachment) return;
+    const targetChannel = pendingAttachmentChannel || activeChannel;
+    setModal(null);
+    const nextAttachment = pendingAttachment;
+    setPendingAttachment(null);
+    await sendPreparedAttachment(nextAttachment, targetChannel);
     setPendingAttachmentChannel(activeChannel);
     setPendingAttachmentPaneIndex(null);
+  }
+
+  async function startVoiceRecording(channelId: string, paneIndex: number | null) {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      log("Voice recording is unavailable in this browser.");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = chooseVoiceMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+
+      voiceRecordingStreamRef.current = stream;
+      voiceRecorderRef.current = recorder;
+      voiceRecordingChunksRef.current = [];
+      setVoiceRecording({ channelId, paneIndex });
+      log(`Recording voice message for #${getChannelLabel(channelId)}.`);
+
+      recorder.addEventListener("dataavailable", (event) => {
+        if (event.data.size > 0) voiceRecordingChunksRef.current.push(event.data);
+      });
+
+      recorder.addEventListener(
+        "stop",
+        () => {
+          const chunks = [...voiceRecordingChunksRef.current];
+          const outputType = recorder.mimeType || mimeType || "audio/webm";
+          const fileName = formatVoiceAttachmentName(Date.now(), outputType);
+          const targetChannelId = activeChannelRef.current;
+          voiceRecorderRef.current = null;
+          voiceRecordingChunksRef.current = [];
+          voiceRecordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+          voiceRecordingStreamRef.current = null;
+          setVoiceRecording(null);
+
+          void (async () => {
+            if (chunks.length === 0) {
+              log("Voice recording discarded.");
+              return;
+            }
+
+            const blob = new Blob(chunks, { type: outputType });
+            const dataUrl = await blobToDataUrl(blob);
+            await sendPreparedAttachment(
+              {
+                fileName,
+                mimeType: outputType,
+                size: blob.size,
+                dataUrl,
+              },
+              targetChannelId,
+            );
+          })().catch(() => {
+            log("Could not prepare voice message.");
+          });
+        },
+        { once: true },
+      );
+
+      recorder.start();
+    } catch {
+      log("Microphone permission denied or unavailable.");
+    }
+  }
+
+  function stopVoiceRecording() {
+    const recorder = voiceRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") return;
+    recorder.stop();
+  }
+
+  async function toggleVoiceRecording(channelId: string, paneIndex: number | null) {
+    if (voiceRecording) {
+      if (voiceRecording.channelId === channelId && voiceRecording.paneIndex === paneIndex) {
+        stopVoiceRecording();
+        return;
+      }
+      log("Finish the current voice recording first.");
+      return;
+    }
+
+    await startVoiceRecording(channelId, paneIndex);
   }
 
   function handleAttachmentChunk(chunk: PlainWireAttachmentChunk) {
@@ -4675,8 +5214,21 @@ function App() {
       <>
         {message.body && !mediaOnly && <>{renderBodyText(message.body, keyPrefix)}</>}
         {imageUrls.map((url) => (
-          <a className="imageEmbed" key={url} href={url} target="_blank" rel="noreferrer">
-            <img src={url} alt={url} />
+          <a
+            className="imageEmbed"
+            key={url}
+            href={isLocalMediaUrl(mediaBaseUrl, url) ? url : buildTweetMediaProxyUrl(mediaBaseUrl, { src: url })}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(event) => {
+              event.preventDefault();
+              setLightboxImage({
+                url: isLocalMediaUrl(mediaBaseUrl, url) ? url : buildTweetMediaProxyUrl(mediaBaseUrl, { src: url }),
+                alt: url,
+              });
+            }}
+          >
+            <img src={isLocalMediaUrl(mediaBaseUrl, url) ? url : buildTweetMediaProxyUrl(mediaBaseUrl, { src: url })} alt={url} />
           </a>
         ))}
         {videoUrls.map((url) =>
@@ -4722,6 +5274,10 @@ function App() {
               download={message.attachment.fileName}
               onClick={(event) => {
                 if (!message.attachment?.objectUrl) event.preventDefault();
+                event.preventDefault();
+                if (message.attachment?.objectUrl) {
+                  setLightboxImage({ url: message.attachment.objectUrl, alt: message.attachment.fileName });
+                }
               }}
             >
               <img src={message.attachment.objectUrl} alt={message.attachment.fileName} />
@@ -5001,76 +5557,60 @@ function App() {
           )}
           {!paneCompact && (
             <div className="paneMediaStrip">
-            <div className="paneMediaStripHeader">
-              <PhoneCall size={13} />
-              <span>Media</span>
-            </div>
-            <div className="paneMediaStripStates">
-              <span className={callActive ? "dot online" : "dot"}>Mic {callActive ? (micMuted ? "muted" : "live") : "off"}</span>
-              <span className={screenSharing ? "dot online" : "dot"}>Share {screenSharing ? "live" : "off"}</span>
-              <span className={cameraActive ? "dot online" : "dot"}>Camera {cameraActive ? "live" : "off"}</span>
-              <span className={remoteMediaActive ? "dot online" : "dot"}>Remote {remoteMediaActive ? "receiving" : "idle"}</span>
-              <span className={peerCallActive ? "dot online" : "dot"}>Peer mic {peerCallActive ? (peerMicMuted ? "muted" : "live") : "off"}</span>
-              <span className={peerCameraActive ? "dot online" : "dot"}>Peer cam {peerCameraActive ? "live" : "off"}</span>
-              <span className={peerScreenSharing ? "dot online" : "dot"}>Peer share {peerScreenSharing ? "live" : "off"}</span>
-            </div>
-            <div className="paneAudioMeters">
-              <div className="paneAudioMeter">
-                <span>Mic</span>
-                <div className="paneAudioMeterBar">
-                  <div className="paneAudioMeterFill" style={{ width: `${callActive ? localAudioLevel : 0}%` }} />
-                </div>
-              </div>
-              <div className="paneAudioMeter">
-                <span>Peer</span>
-                <div className="paneAudioMeterBar">
-                  <div className="paneAudioMeterFill peer" style={{ width: `${peerCallActive ? peerAudioLevel : 0}%` }} />
-                </div>
-              </div>
-            </div>
-            <div className="paneMediaStripActions">
-            <button
-              type="button"
-              className={`secondaryButton compact ${micMuted ? "active" : ""}`}
-              onClick={toggleMic}
-              aria-label={micMuted ? "Unmute microphone" : "Mute microphone"}
-            >
-              {micMuted ? <MicOff size={13} /> : <Mic size={13} />}
-              {micMuted ? "Unmute" : "Mute"}
-            </button>
-            <button
-              type="button"
-              className={`secondaryButton compact ${callActive ? "active" : ""}`}
-              onClick={toggleCall}
-                aria-label={callActive ? "End voice" : "Start voice"}
-              >
+              <div className="paneMediaStripHeader">
                 <PhoneCall size={13} />
-                {callActive ? "End call" : "Start call"}
-              </button>
-            <button
-              type="button"
-              className={`secondaryButton compact ${screenSharing ? "active" : ""}`}
-              onClick={toggleScreenShare}
-              aria-label={screenSharing ? "Stop screen share" : "Start screen share"}
-            >
-              <ScreenShare size={13} />
-              {screenSharing ? "Stop share" : "Share screen"}
-            </button>
-            <button
-              type="button"
-              className={`secondaryButton compact ${cameraActive ? "active" : ""}`}
-              onClick={toggleCamera}
-              aria-label={cameraActive ? "Stop camera" : "Start camera"}
-            >
-              {cameraActive ? <VideoOff size={13} /> : <Video size={13} />}
-              {cameraActive ? "Stop camera" : "Start camera"}
-            </button>
-            {activeVoiceRoom && (
-              <button type="button" className="secondaryButton compact" onClick={() => joinVoiceRoom(activeVoiceRoom)}>
-                Leave room
-              </button>
-            )}
-          </div>
+                <span>Media</span>
+              </div>
+              <div className="paneAudioMeters">
+                <div className="paneAudioMeter">
+                  <span>Mic</span>
+                  <div className="paneAudioMeterBar">
+                    <div className="paneAudioMeterFill" style={{ width: `${callActive ? localAudioLevel : 0}%` }} />
+                  </div>
+                </div>
+              </div>
+              <div className="paneMediaStripActions">
+                <button
+                  type="button"
+                  className={`secondaryButton compact mediaIconButton ${micMuted ? "active" : ""}`}
+                  onClick={toggleMic}
+                  aria-label={micMuted ? "Unmute microphone" : "Mute microphone"}
+                  title={micMuted ? "Unmute microphone" : "Mute microphone"}
+                  aria-pressed={micMuted}
+                >
+                  {micMuted ? <MicOff size={13} /> : <Mic size={13} />}
+                </button>
+                <button
+                  type="button"
+                  className={`secondaryButton compact mediaIconButton ${callActive ? "active" : ""}`}
+                  onClick={toggleCall}
+                  aria-label={callActive ? "End voice call" : "Start voice call"}
+                  title={callActive ? "End voice call" : "Start voice call"}
+                  aria-pressed={callActive}
+                >
+                  <PhoneCall size={13} />
+                </button>
+                <button
+                  type="button"
+                  className={`secondaryButton compact mediaIconButton ${screenSharing ? "active" : ""}`}
+                  onClick={toggleScreenShare}
+                  aria-label={screenSharing ? "Stop screen share" : "Start screen share"}
+                  title={screenSharing ? "Stop screen share" : "Start screen share"}
+                  aria-pressed={screenSharing}
+                >
+                  <ScreenShare size={13} />
+                </button>
+                <button
+                  type="button"
+                  className={`secondaryButton compact mediaIconButton ${cameraActive ? "active" : ""}`}
+                  onClick={toggleCamera}
+                  aria-label={cameraActive ? "Stop camera" : "Start camera"}
+                  title={cameraActive ? "Stop camera" : "Start camera"}
+                  aria-pressed={cameraActive}
+                >
+                  {cameraActive ? <VideoOff size={13} /> : <Video size={13} />}
+                </button>
+              </div>
             </div>
           )}
           {(!paneCompact && (cameraActive || screenSharing || remoteVideoActive)) && (
@@ -5127,27 +5667,6 @@ function App() {
                   </figure>
                 )}
               </div>
-            </div>
-          )}
-          {!paneCompact && (
-            <div className="paneVoiceMesh">
-            <div className="paneVoiceMeshHeader">
-              <Volume2 size={13} />
-              <span>Voice Channels</span>
-              <small>{activeVoiceRoom ? `Active: ${activeVoiceRoom}` : "Idle"}</small>
-            </div>
-            <div className="paneVoiceMeshRooms">
-              {voiceRooms.map((room) => (
-                <button
-                  key={room}
-                  type="button"
-                  className={`secondaryButton compact ${activeVoiceRoom === room ? "active" : ""}`}
-                  onClick={() => joinVoiceRoom(room)}
-                >
-                  {room}
-                </button>
-              ))}
-            </div>
             </div>
           )}
           {paneVisibleMessages.slice(-20).map((message) => (
@@ -5365,6 +5884,9 @@ function App() {
               setComposerTargetChannel(channelId);
               setComposerTargetPaneIndex(paneIndex);
             }}
+            onPaste={(event) => {
+              void handleComposerPaste(event, channelId, paneIndex);
+            }}
             placeholder={`Message #${paneLabel}`}
             rows={2}
             onKeyDown={(event) => {
@@ -5423,6 +5945,23 @@ function App() {
                 }}
               >
               <Film size={13} />
+            </button>
+            <button
+              type="button"
+              className={`secondaryButton compact ${
+                voiceRecording?.channelId === channelId && voiceRecording?.paneIndex === paneIndex ? "active recording" : ""
+              }`}
+              aria-label={
+                voiceRecording?.channelId === channelId && voiceRecording?.paneIndex === paneIndex
+                  ? `Stop voice message recording for #${paneLabel}`
+                  : `Record voice message for #${paneLabel}`
+              }
+              aria-pressed={voiceRecording?.channelId === channelId && voiceRecording?.paneIndex === paneIndex}
+              onClick={() => {
+                void toggleVoiceRecording(channelId, paneIndex);
+              }}
+            >
+              <Mic size={13} />
             </button>
             <button
               type="button"
@@ -5784,7 +6323,6 @@ function App() {
           Nick
           <input value={xmppNick} onChange={(event) => setXmppNick(event.target.value)} placeholder={name || DEFAULT_NAME} />
         </label>
-        <div className="signalStatus">XMPP status: {xmppStatus}</div>
         <div className="signalStatus">
           Encrypted room traffic is sent through the XMPP server instead of browser-to-browser transport.
         </div>
@@ -5799,6 +6337,9 @@ function App() {
         <div className="signalActions">
           <button type="button" onClick={() => void saveSettings()}>
             Validate / save
+          </button>
+          <button type="button" onClick={() => void connectXmpp()}>
+            Connect
           </button>
           <button type="button" onClick={() => xmppClientRef.current?.disconnect()}>
             Disconnect
@@ -5882,12 +6423,20 @@ function App() {
         <section className="channelBlock">
           <div className="blockTitle splitTitle">
             <span>Text Channels</span>
-            <button type="button" onClick={() => setModal("channel")} aria-label="Add text channel">
+            <button
+              type="button"
+              onClick={() => {
+                setChannelCreateKind("text");
+                setModal("channel");
+              }}
+              aria-label="Add text channel"
+            >
               <Plus size={14} />
             </button>
           </div>
-          {channels.map((channel) => (
-            <div className={`channelRow ${activeChannel === channel.id ? "selected" : ""}`} key={channel.id}>
+          {topLevelChannels.map((channel) => (
+            <React.Fragment key={channel.id}>
+              <div className={`channelRow ${activeChannel === channel.id ? "selected" : ""}`}>
               <button className="channel" onClick={() => switchChannel(channel.id)}>
                 <Hash size={17} />
                 <span>{channel.label}</span>
@@ -5917,22 +6466,147 @@ function App() {
                   <CheckCheck size={14} />
                 </button>
               )}
-            </div>
+              </div>
+              {(channelChildren[channel.id] ?? []).length > 0 && (
+                <div className="channelChildren" aria-label={`${channel.label} subchannels`}>
+              {(channelChildren[channel.id] ?? []).map((childId) => {
+                  const childChannel = channels.find((item) => item.id === childId);
+                  return (
+                    <div className={`channelRow channelChildRow ${activeChannel === childId ? "selected" : ""}`} key={childId}>
+                      <button className="channel" onClick={() => switchChannel(childId)} aria-pressed={activeChannel === childId}>
+                        <Hash size={16} />
+                        <span>{childChannel?.label ?? childId}</span>
+                        {unreadByChannel[childId] > 0 && <span className="channelUnread">{unreadByChannel[childId]}</span>}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            </React.Fragment>
           ))}
+          <div className="voiceChannelSection">
+            <div className="blockTitle splitTitle">
+              <span>Voice Channels</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setChannelCreateKind("voice");
+                  setModal("channel");
+                }}
+                aria-label="Add voice channel"
+              >
+                <Plus size={14} />
+              </button>
+            </div>
+            <div className="voiceChannelRooms">
+              {voiceRooms.map((room) => {
+                const isActive = activeVoiceRoom === room;
+                return (
+                  <div key={room} className="voiceChannelRoom">
+                    <div className={`channelRow ${isActive ? "selected" : ""}`}>
+                      <button
+                        type="button"
+                        className="channel"
+                        onClick={() => joinVoiceRoom(room)}
+                        aria-pressed={isActive}
+                      >
+                        <Volume2 size={17} />
+                        <span>{room}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="channelTool"
+                        onClick={() => {
+                          setEditingVoiceRoom(room);
+                          setNewChannelName(room);
+                          setModal("voice-channel");
+                        }}
+                        aria-label={`Voice channel settings for ${room}`}
+                        title="Voice channel settings"
+                      >
+                        <Settings size={14} />
+                      </button>
+                    </div>
+                    {isActive && voiceRoomMembers.length > 0 && (
+                      <div className="voiceChannelMembers" aria-label={`${room} members`}>
+                        {voiceRoomMembers.map((member) => (
+                          <div className={`voiceChannelMember ${member.speaking ? "speaking" : ""}`} key={`${room}:${member.id}`}>
+                            <span className={`voiceChannelMemberAvatar ${member.speaking ? "speaking" : ""}`} aria-hidden="true">
+                              {member.avatarUrl ? <img src={member.avatarUrl} alt="" /> : getAvatarFallback(member.name, member.name)}
+                            </span>
+                            <span>{member.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </section>
 
-        <section className="channelBlock">
-          <div className="blockTitle">Voice Channels</div>
-          {voiceRooms.map((room) => (
-            <button className={`channel ${activeVoiceRoom === room ? "selected" : ""}`} key={room} onClick={() => joinVoiceRoom(room)}>
-              <Volume2 size={17} />
-              {room}
-            </button>
-          ))}
-        </section>
+        {activeVoiceRoom && (
+          <section className="panelSection sidebarMediaSection">
+            <div className="paneAudioMeters">
+              <div className="paneAudioMeter">
+                <span>Mic</span>
+                <div className="paneAudioMeterBar">
+                  <div className="paneAudioMeterFill" style={{ width: `${callActive ? localAudioLevel : 0}%` }} />
+                </div>
+              </div>
+            </div>
+            <div className="mediaActions">
+              <button
+                type="button"
+                className={`secondaryButton compact mediaIconButton ${micMuted ? "active" : ""}`}
+                onClick={toggleMic}
+                aria-label={micMuted ? "Unmute microphone" : "Mute microphone"}
+                title={micMuted ? "Unmute microphone" : "Mute microphone"}
+                aria-pressed={micMuted}
+              >
+                {micMuted ? <MicOff size={13} /> : <Mic size={13} />}
+              </button>
+              <button
+                type="button"
+                className={`secondaryButton compact mediaIconButton ${callActive ? "active" : ""}`}
+                onClick={toggleCall}
+                aria-label={callActive ? "End voice call" : "Start voice call"}
+                title={callActive ? "End voice call" : "Start voice call"}
+                aria-pressed={callActive}
+              >
+                <PhoneCall size={13} />
+              </button>
+              <button
+                type="button"
+                className={`secondaryButton compact mediaIconButton ${screenSharing ? "active" : ""}`}
+                onClick={toggleScreenShare}
+                aria-label={screenSharing ? "Stop screen share" : "Start screen share"}
+                title={screenSharing ? "Stop screen share" : "Start screen share"}
+                aria-pressed={screenSharing}
+              >
+                <ScreenShare size={13} />
+              </button>
+              <button
+                type="button"
+                className={`secondaryButton compact mediaIconButton ${cameraActive ? "active" : ""}`}
+                onClick={toggleCamera}
+                aria-label={cameraActive ? "Stop camera" : "Start camera"}
+                title={cameraActive ? "Stop camera" : "Start camera"}
+                aria-pressed={cameraActive}
+              >
+                {cameraActive ? <VideoOff size={13} /> : <Video size={13} />}
+              </button>
+            </div>
+            <audio ref={remoteAudioRef} autoPlay playsInline />
+          </section>
+        )}
 
         <div className="userStrip">
-          <div className="avatar">LU</div>
+          <div className="avatar" aria-label={name || "Anonymous avatar"}>
+            {avatarUrl ? <img src={avatarUrl} alt="" /> : getAvatarFallback(name || "Anonymous", name || "Anonymous")}
+          </div>
           <div>
             <strong>{name || "Anonymous"}</strong>
             <span>{connected ? presence : "local only"}</span>
@@ -6006,9 +6680,9 @@ function App() {
             >
               <Columns3 size={19} />
             </button>
-            <button className={`iconButton ${mainTab === "session" ? "active" : ""}`} onClick={openSessionTab} aria-label="Open federation" title="Open federation">
-              <Signal size={19} />
-            </button>
+            <div className={`signalStatus topbarStatus ${xmppStatus}`} aria-live="polite">
+              XMPP status: {xmppStatus}
+            </div>
           </div>
         </header>
 
@@ -6027,7 +6701,13 @@ function App() {
               key={message.id}
               data-message-id={message.id}
             >
-              <div className="avatar small">{message.author.slice(0, 2).toUpperCase()}</div>
+              <div className={`avatar small ${messageAvatarByAuthor.has(message.author.trim().toLowerCase()) ? "hasImage" : ""}`}>
+                {messageAvatarByAuthor.get(message.author.trim().toLowerCase()) ? (
+                  <img src={messageAvatarByAuthor.get(message.author.trim().toLowerCase())!} alt="" />
+                ) : (
+                  getAvatarFallback(message.author, message.author)
+                )}
+              </div>
               <div className="bubble">
                 <div className="meta">
                   <strong>{message.author}</strong>
@@ -6269,6 +6949,9 @@ function App() {
               setComposerTargetChannel(activeChannel);
               setComposerTargetPaneIndex(null);
             }}
+            onPaste={(event) => {
+              void handleComposerPaste(event, activeChannel, null);
+            }}
             placeholder={`Message #${activeLabel}`}
             rows={1}
             onKeyDown={(event) => {
@@ -6278,6 +6961,21 @@ function App() {
             }}
           />
           <div className="composerRight">
+            <button
+              type="button"
+              className={voiceRecording?.channelId === activeChannel && voiceRecording?.paneIndex === null ? "active recording" : ""}
+              aria-label={
+                voiceRecording?.channelId === activeChannel && voiceRecording?.paneIndex === null
+                  ? `Stop voice message recording for #${activeLabel}`
+                  : `Record voice message for #${activeLabel}`
+              }
+              aria-pressed={voiceRecording?.channelId === activeChannel && voiceRecording?.paneIndex === null}
+              onClick={() => {
+                void toggleVoiceRecording(activeChannel, null);
+              }}
+            >
+              <Mic size={20} />
+            </button>
             <button
               type="button"
               aria-label="Add attachment"
@@ -6442,9 +7140,9 @@ function App() {
               <div className="member" key={member}>
                 <span className={index < 2 || connected ? "dot online" : "dot"} />
                 <button type="button" onClick={() => openMemberProfile(member)}>
-                  {member === "You" ? (
+                  {member === localMemberName ? (
                     <span className="memberAvatar">
-                      {avatarUrl ? <img src={avatarUrl} alt="" /> : member.slice(0, 2).toUpperCase()}
+                      {avatarUrl ? <img src={avatarUrl} alt="" /> : getAvatarFallback(localMemberName, localMemberName)}
                     </span>
                   ) : member === peerName ? (
                     <span className="memberAvatar">
@@ -6459,136 +7157,11 @@ function App() {
             ))}
           </div>
         </section>
-
-        <section className="panelSection">
-          <div className="sectionHeader">
-            <PhoneCall size={18} />
-            <strong>Media</strong>
-          </div>
-          <div className="mediaState">
-            <span className={callActive ? "dot online" : "dot"} />
-            Local mic {callActive ? (micMuted ? "muted" : "live") : "off"}
-          </div>
-          <div className="mediaState">
-            <span className={screenSharing ? "dot online" : "dot"} />
-            Screen share {screenSharing ? "live" : "off"}
-          </div>
-          <div className="mediaState">
-            <span className={cameraActive ? "dot online" : "dot"} />
-            Camera {cameraActive ? "live" : "off"}
-          </div>
-          <div className="mediaState">
-            <span className={remoteMediaActive ? "dot online" : "dot"} />
-            Remote media {remoteMediaActive ? "receiving" : "idle"}
-          </div>
-      <div className="mediaState">
-        <span className={peerCallActive ? "dot online" : "dot"} />
-        Peer mic {peerCallActive ? (peerMicMuted ? "muted" : "live") : "off"}
-      </div>
-      <div className="mediaState">
-        <span className={peerCameraActive ? "dot online" : "dot"} />
-        Peer camera {peerCameraActive ? "live" : "off"}
-      </div>
-      <div className="mediaState">
-        <span className={peerScreenSharing ? "dot online" : "dot"} />
-        Peer screen share {peerScreenSharing ? "live" : "off"}
-      </div>
-          <div className="mediaActions">
-            <button type="button" className={`secondaryButton compact ${micMuted ? "active" : ""}`} onClick={toggleMic}>
-              {micMuted ? <MicOff size={13} /> : <Mic size={13} />}
-              {micMuted ? "Unmute" : "Mute"}
-            </button>
-            <button type="button" className={`secondaryButton compact ${callActive ? "active" : ""}`} onClick={toggleCall}>
-              <PhoneCall size={13} />
-              {callActive ? "End call" : "Start call"}
-            </button>
-            <button
-              type="button"
-              className={`secondaryButton compact ${screenSharing ? "active" : ""}`}
-              onClick={toggleScreenShare}
-            >
-              <ScreenShare size={13} />
-              {screenSharing ? "Stop share" : "Share screen"}
-            </button>
-            <button
-              type="button"
-              className={`secondaryButton compact ${cameraActive ? "active" : ""}`}
-              onClick={toggleCamera}
-            >
-              {cameraActive ? <VideoOff size={13} /> : <Video size={13} />}
-              {cameraActive ? "Stop camera" : "Start camera"}
-            </button>
-          </div>
-          <div className="paneAudioMeters">
-            <div className="paneAudioMeter">
-              <span>Mic</span>
-              <div className="paneAudioMeterBar">
-                <div className="paneAudioMeterFill" style={{ width: `${callActive ? localAudioLevel : 0}%` }} />
-              </div>
-            </div>
-            <div className="paneAudioMeter">
-              <span>Peer</span>
-              <div className="paneAudioMeterBar">
-                <div className="paneAudioMeterFill peer" style={{ width: `${peerCallActive ? peerAudioLevel : 0}%` }} />
-              </div>
-            </div>
-          </div>
-          <div className="voiceMeshCompact">
-            <div className="voiceMeshCompactHeader">
-              <Volume2 size={13} />
-              <span>Voice Channels</span>
-              <small>{activeVoiceRoom ? `Active: ${activeVoiceRoom}` : "Idle"}</small>
-            </div>
-            <div className="voiceMeshCompactRooms">
-              {voiceRooms.map((room) => (
-                <button
-                  key={room}
-                  type="button"
-                  className={`secondaryButton compact ${activeVoiceRoom === room ? "active" : ""}`}
-                  onClick={() => joinVoiceRoom(room)}
-                >
-                  {room}
-                </button>
-              ))}
-            </div>
-            {activeVoiceRoom && (
-              <button type="button" className="secondaryButton compact" onClick={() => joinVoiceRoom(activeVoiceRoom)}>
-                Leave room
-              </button>
-            )}
-          </div>
-          {(cameraActive || screenSharing || remoteVideoActive) && (
-            <div className="videoGrid">
-              {cameraActive && (
-                <figure>
-                  <video ref={localCameraVideoRef} autoPlay muted playsInline />
-                  <figcaption>Local camera</figcaption>
-                </figure>
-              )}
-              {screenSharing && (
-                <figure>
-                  <video ref={localScreenVideoRef} autoPlay muted playsInline />
-                  <figcaption>Local screen</figcaption>
-                </figure>
-              )}
-              {remoteVideoActive && (
-                <figure>
-                  <video ref={remoteVideoRef} autoPlay playsInline />
-                  <figcaption>{peerCameraActive ? "Peer camera" : peerScreenSharing ? "Peer screen share" : "Remote video"}</figcaption>
-                </figure>
-              )}
-            </div>
-          )}
-          <audio ref={remoteAudioRef} autoPlay playsInline />
-        </section>
       </aside>
 
       {lightboxImage && (
         <div className="lightboxLayer" role="presentation" onMouseDown={() => setLightboxImage(null)}>
           <div className="lightboxDialog" role="dialog" aria-modal="true" aria-label="Image preview" onMouseDown={(event) => event.stopPropagation()}>
-            <button className="lightboxClose iconButton" type="button" onClick={() => setLightboxImage(null)} aria-label="Close image preview">
-              <X size={20} />
-            </button>
             <img src={lightboxImage.url} alt={lightboxImage.alt} />
           </div>
         </div>
@@ -6607,9 +7180,11 @@ function App() {
                 {modal === "server" && "Create Server"}
                 {modal === "rename-server" && "Server Settings"}
                 {modal === "delete-server" && "Delete Server"}
-                {modal === "channel" && "Create Channel"}
-                {modal === "rename-channel" && "Rename Channel"}
+                {modal === "channel" && (channelCreateKind === "voice" ? "Create Voice Channel" : "Create Channel")}
+                {modal === "rename-channel" && "Channel Settings"}
                 {modal === "delete-channel" && "Delete Channel"}
+                {modal === "voice-channel" && "Voice Channel Settings"}
+                {modal === "delete-voice-channel" && "Delete Voice Channel"}
                 {modal === "edit-message" && "Edit Message"}
                 {modal === "delete-message" && "Delete Message"}
                 {modal === "search" && "Search Messages"}
@@ -6675,21 +7250,66 @@ function App() {
             {modal === "channel" && (
               <div className="modalBody">
                 <label>
-                  Channel name
+                  {channelCreateKind === "voice" ? "Voice channel name" : "Channel name"}
                   <input value={newChannelName} onChange={(event) => setNewChannelName(event.target.value)} autoFocus />
                 </label>
-                <button className="primaryButton" type="button" onClick={createChannel}>Create text channel</button>
+                <button className="primaryButton" type="button" onClick={createChannel}>
+                  {channelCreateKind === "voice" ? "Create voice channel" : "Create text channel"}
+                </button>
               </div>
             )}
 
             {modal === "rename-channel" && (
               <div className="modalBody">
                 <label>
-                  Channel name
+                  {editingChannelId?.includes(":") ? "Subchannel name" : "Channel name"}
                   <input value={newChannelName} onChange={(event) => setNewChannelName(event.target.value)} autoFocus />
                 </label>
+                <label>
+                  New subchannel
+                  <input
+                    value={newSubchannelName}
+                    onChange={(event) => setNewSubchannelName(event.target.value)}
+                    placeholder="Lounge"
+                  />
+                </label>
+                {(channelChildren[editingChannelId ?? ""] ?? []).length > 0 && (
+                  <div className="modalChildList">
+                    <strong>Subchannels</strong>
+                    {(channelChildren[editingChannelId ?? ""] ?? []).map((childId) => {
+                      const childChannel = channels.find((item) => item.id === childId);
+                      return (
+                        <div className="modalChildRow" key={childId}>
+                          <button
+                            className="secondaryButton compact"
+                            type="button"
+                            onClick={() => {
+                              setEditingChannelId(childId);
+                              setNewChannelName(childChannel?.label ?? childId.split(":").pop() ?? childId);
+                              setNewSubchannelName("");
+                            }}
+                          >
+                            {childChannel?.label ?? childId}
+                          </button>
+                          <button
+                            className="dangerButton compact"
+                            type="button"
+                            onClick={() => {
+                              setEditingChannelId(childId);
+                              setDeletingChannelId(childId);
+                              setModal("delete-channel");
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
                 <div className="modalActions">
                   <button className="primaryButton" type="button" onClick={renameChannel}>Save</button>
+                  <button className="secondaryButton" type="button" onClick={createTextSubchannel}>Create subchannel</button>
                   <button
                     className="dangerButton"
                     type="button"
@@ -6699,7 +7319,7 @@ function App() {
                     }}
                     disabled={channels.length <= 1 || !editingChannelId}
                   >
-                    Delete channel
+                    {editingChannelId?.includes(":") ? "Delete subchannel" : "Delete channel"}
                   </button>
                 </div>
               </div>
@@ -6708,11 +7328,47 @@ function App() {
             {modal === "delete-channel" && deletingChannel && deleteFallbackChannel && (
               <div className="modalBody">
                 <p className="modalCopy">
-                  Delete #{deletingChannel.label}? Messages from this channel will move to #{deleteFallbackChannel.label}.
+                  Delete {deletingChannel.id.includes(":") ? "subchannel" : "channel"} #{deletingChannel.label}? Messages from this channel will move to #{deleteFallbackChannel.label}.
                 </p>
                 <div className="modalActions">
                   <button className="secondaryButton" type="button" onClick={() => setModal(editingChannelId ? "rename-channel" : null)}>Back</button>
-                  <button className="dangerButton" type="button" onClick={confirmDeleteChannel}>Delete channel</button>
+                  <button className="dangerButton" type="button" onClick={confirmDeleteChannel}>
+                    {deletingChannel.id.includes(":") ? "Delete subchannel" : "Delete channel"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {modal === "voice-channel" && editingVoiceRoom && (
+              <div className="modalBody">
+                <label>
+                  Voice channel name
+                  <input value={newChannelName} onChange={(event) => setNewChannelName(event.target.value)} autoFocus />
+                </label>
+                <div className="modalActions">
+                  <button className="primaryButton" type="button" onClick={saveVoiceRoom}>Save</button>
+                  <button
+                    className="dangerButton"
+                    type="button"
+                    onClick={() => {
+                      setDeletingVoiceRoom(editingVoiceRoom);
+                      setModal("delete-voice-channel");
+                    }}
+                  >
+                    Delete voice channel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {modal === "delete-voice-channel" && deletingVoiceRoom && (
+              <div className="modalBody">
+                <p className="modalCopy">
+                  Delete voice channel {deletingVoiceRoom}?
+                </p>
+                <div className="modalActions">
+                  <button className="secondaryButton" type="button" onClick={() => setModal("voice-channel")}>Back</button>
+                  <button className="dangerButton" type="button" onClick={deleteVoiceRoom}>Delete voice channel</button>
                 </div>
               </div>
             )}
@@ -6789,33 +7445,33 @@ function App() {
                   className="profileCard"
                   style={{
                     boxShadow:
-                      selectedMember === "You"
+                      selectedMemberIsLocal
                         ? `inset 4px 0 0 ${accentColor}`
-                        : selectedMember === peerName
+                        : selectedMemberIsPeer
                           ? `inset 4px 0 0 ${peerAccentColor}`
                           : "inset 4px 0 0 #2d3139",
                   }}
                 >
                   <div className="profileBanner">
-                    {selectedMember === "You" ? (
+                    {selectedMemberIsLocal ? (
                       bannerUrl ? <img src={bannerUrl} alt="" /> : null
-                    ) : selectedMember === peerName ? (
+                    ) : selectedMemberIsPeer ? (
                       peerBannerUrl ? <img src={peerBannerUrl} alt="" /> : null
                     ) : null}
                   </div>
                   <div className="profileHeader">
                     <div
                       className={`profileAvatarWrap ${
-                        selectedMember === "You"
+                        selectedMemberIsLocal
                           ? avatarAnimated
                             ? "animated"
                             : ""
-                          : selectedMember === peerName && peerAvatarAnimated
+                          : selectedMemberIsPeer && peerAvatarAnimated
                             ? "animated"
                             : ""
                       }`}
                     >
-                      {selectedMember === "You" ? (
+                      {selectedMemberIsLocal ? (
                         avatarUrl ? (
                           <img className="profileAvatar" src={avatarUrl} alt={selectedMember} />
                         ) : (
@@ -6823,7 +7479,7 @@ function App() {
                             {getAvatarFallback(name || "Anonymous", name || "Anonymous")}
                           </div>
                         )
-                      ) : selectedMember === peerName ? (
+                      ) : selectedMemberIsPeer ? (
                         peerAvatarUrl ? (
                           <img className="profileAvatar" src={peerAvatarUrl} alt={selectedMember} />
                         ) : (
@@ -6836,25 +7492,25 @@ function App() {
                           {getAvatarFallback(selectedMember, selectedMember)}
                         </div>
                       )}
-                      {selectedMember === "You" ? (
+                      {selectedMemberIsLocal ? (
                         avatarFrameUrl ? <img className="profileAvatarFrame" src={avatarFrameUrl} alt="" aria-hidden="true" /> : null
-                      ) : selectedMember === peerName ? (
+                      ) : selectedMemberIsPeer ? (
                         peerAvatarFrameUrl ? <img className="profileAvatarFrame" src={peerAvatarFrameUrl} alt="" aria-hidden="true" /> : null
                       ) : null}
                     </div>
                     <div className="profileMeta">
-                      <strong>{selectedMember}</strong>
+                      <strong>{selectedMemberIsLocal ? localMemberName : selectedMember}</strong>
                       <span>
-                        {selectedMember === "You" ? presence : selectedMember === peerName ? peerPresence : "local profile"}
+                        {selectedMemberIsLocal ? presence : selectedMemberIsPeer ? peerPresence : "local profile"}
                       </span>
                       <span>
-                        {selectedMember === "You" ? headline || "No headline set" : selectedMember === peerName ? peerHeadline || "No headline set" : "Profile card"}
+                        {selectedMemberIsLocal ? headline || "No headline set" : selectedMemberIsPeer ? peerHeadline || "No headline set" : "Profile card"}
                       </span>
                       <span>
-                        {selectedMember === "You" ? statusMessage || "No custom status set" : selectedMember === peerName ? peerStatusMessage || "No custom status set" : "Profile card"}
+                        {selectedMemberIsLocal ? statusMessage || "No custom status set" : selectedMemberIsPeer ? peerStatusMessage || "No custom status set" : "Profile card"}
                       </span>
                       <span>
-                        {selectedMember === "You" ? (
+                        {selectedMemberIsLocal ? (
                           website.trim() ? (
                             <a href={website} target="_blank" rel="noreferrer">
                               {website}
@@ -6862,7 +7518,7 @@ function App() {
                           ) : (
                             "No website set"
                           )
-                        ) : selectedMember === peerName ? (
+                        ) : selectedMemberIsPeer ? (
                           peerWebsite.trim() ? (
                             <a href={peerWebsite} target="_blank" rel="noreferrer">
                               {peerWebsite}
@@ -6875,80 +7531,80 @@ function App() {
                         )}
                       </span>
                       <span>
-                        {selectedMember === "You"
+                        {selectedMemberIsLocal
                           ? location || "No location set"
-                          : selectedMember === peerName
+                          : selectedMemberIsPeer
                             ? peerLocation || "No location set"
                             : "Profile card"}
                       </span>
                       <span>
-                        {selectedMember === "You"
+                        {selectedMemberIsLocal
                           ? timezone || "No timezone set"
-                          : selectedMember === peerName
+                          : selectedMemberIsPeer
                             ? peerTimezone || "No timezone set"
                             : "Profile card"}
                       </span>
                       <span>
-                        {selectedMember === "You"
+                        {selectedMemberIsLocal
                           ? birthday || "No birthday set"
-                          : selectedMember === peerName
+                          : selectedMemberIsPeer
                             ? peerBirthday || "No birthday set"
                             : "Profile card"}
                       </span>
                       <span>
-                        {selectedMember === "You"
+                        {selectedMemberIsLocal
                           ? company || "No company set"
-                          : selectedMember === peerName
+                          : selectedMemberIsPeer
                             ? peerCompany || "No company set"
                             : "Profile card"}
                       </span>
                       <span>
-                        {selectedMember === "You"
+                        {selectedMemberIsLocal
                           ? school || "No school set"
-                          : selectedMember === peerName
+                          : selectedMemberIsPeer
                             ? peerSchool || "No school set"
                             : "Profile card"}
                       </span>
                       <span>
-                        {selectedMember === "You"
+                        {selectedMemberIsLocal
                           ? major || "No major set"
-                          : selectedMember === peerName
+                          : selectedMemberIsPeer
                             ? peerMajor || "No major set"
                             : "Profile card"}
                       </span>
                       <span>
-                        {selectedMember === "You" ? pronouns || "Pronouns not set" : selectedMember === peerName ? peerPronouns || "Pronouns not set" : "Profile card"}
+                        {selectedMemberIsLocal ? pronouns || "Pronouns not set" : selectedMemberIsPeer ? peerPronouns || "Pronouns not set" : "Profile card"}
                       </span>
                       <span>
-                        {selectedMember === "You"
+                        {selectedMemberIsLocal
                           ? pronunciation || "No pronunciation set"
-                          : selectedMember === peerName
+                          : selectedMemberIsPeer
                             ? peerPronunciation || "No pronunciation set"
                             : "Profile card"}
                       </span>
                       <span>
-                        {selectedMember === "You"
+                        {selectedMemberIsLocal
                           ? hobbies || "No hobbies set"
-                          : selectedMember === peerName
+                          : selectedMemberIsPeer
                             ? peerHobbies || "No hobbies set"
                             : "Profile card"}
                       </span>
                       <span>
-                        {selectedMember === "You"
+                        {selectedMemberIsLocal
                           ? languages || "No languages set"
-                          : selectedMember === peerName
+                          : selectedMemberIsPeer
                             ? peerLanguages || "No languages set"
                             : "Profile card"}
                       </span>
                       <span>
-                        {selectedMember === "You" ? about || "No profile note set" : selectedMember === peerName ? peerAbout || "No profile note set" : "Profile card"}
+                        {selectedMemberIsLocal ? about || "No profile note set" : selectedMemberIsPeer ? peerAbout || "No profile note set" : "Profile card"}
                       </span>
                       <span>
-                        {selectedMember === "You"
+                        {selectedMemberIsLocal
                           ? avatarAnimated
                             ? "Animated avatar enabled"
                             : "Static avatar"
-                          : selectedMember === peerName
+                          : selectedMemberIsPeer
                             ? peerAvatarAnimated
                               ? "Animated avatar enabled"
                               : "Static avatar"

@@ -10,6 +10,8 @@ export type WorkspaceBackupSettings = {
   serverSubtitles?: Record<string, string>;
   activeVoiceRoom?: string | null;
   channels?: { id: string; label: string }[];
+  channelChildren?: Record<string, string[]>;
+  voiceRooms?: string[];
   xmppWebSocketUrl?: string;
   xmppJid?: string;
   xmppPassword?: string;

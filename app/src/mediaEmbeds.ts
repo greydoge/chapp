@@ -1,6 +1,6 @@
 import { buildTweetMediaProxyUrl } from "./tweetMedia";
 
-function isLocalMediaUrl(baseUrl: string, url: string) {
+export function isLocalMediaUrl(baseUrl: string, url: string) {
   if (url.startsWith("blob:") || url.startsWith("data:")) {
     return true;
   }

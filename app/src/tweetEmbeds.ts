@@ -35,6 +35,7 @@ export type TweetReply = {
   handle: string;
   avatarUrl?: string;
   text: string;
+  translationText?: string;
   url: string;
   createdAt?: string;
   media: TweetMedia[];
@@ -46,6 +47,7 @@ export type TweetPreview = {
   handle: string;
   avatarUrl?: string;
   text: string;
+  translationText?: string;
   createdAt?: string;
   media: TweetMedia[];
   reply?: TweetReply;
@@ -196,6 +198,7 @@ type FxTweet = {
   url?: string;
   id?: string;
   text?: string;
+  lang?: string | null;
   created_at?: string;
   created_timestamp?: number;
   author?: {
@@ -206,6 +209,11 @@ type FxTweet = {
   replying_to?: string | null;
   replying_to_status?: string | null;
   quote?: FxTweet | null;
+  translation?: {
+    text?: string;
+    source_lang?: string;
+    target_lang?: string;
+  } | null;
   media?: FxTweetMediaCollection;
   raw_text?: {
     text?: string;
@@ -220,6 +228,16 @@ type FxTweet = {
     }>;
   };
 };
+
+function getEnglishTranslation(tweet: FxTweet) {
+  const translated = tweet.translation?.text?.trim();
+  const sourceLang = (tweet.translation?.source_lang ?? tweet.lang ?? "").trim().toLowerCase();
+  const targetLang = (tweet.translation?.target_lang ?? "").trim().toLowerCase();
+  const original = tweet.text?.trim() ?? "";
+
+  if (!translated || sourceLang === "en" || targetLang !== "en" || translated === original) return undefined;
+  return translated;
+}
 
 type FxTweetApiResponse = {
   code?: number;
@@ -286,6 +304,7 @@ function buildRelatedTweet(related: FxTweet, fallbackUrl: string) {
     handle,
     avatarUrl: related.author?.avatar_url,
     text: related.text ?? "",
+    translationText: getEnglishTranslation(related),
     createdAt: related.created_at,
     media: buildMedia(related, rewriteTweetUrlToFxTwitter(related.url ?? fallbackUrl)),
     url: rewriteTweetUrlToFxTwitter(related.url ?? fallbackUrl),
@@ -304,6 +323,7 @@ export function buildTweetPreviewFromFxTweet(tweet: FxTweet, fallbackUrl: string
     handle,
     avatarUrl: tweet.author?.avatar_url,
     text: tweet.text ?? "",
+    translationText: getEnglishTranslation(tweet),
     createdAt: tweet.created_at,
     media: buildMedia(tweet, tweetUrl),
     quote: tweet.quote ? buildRelatedTweet(tweet.quote, tweetUrl) ?? undefined : undefined,
@@ -350,8 +370,8 @@ export async function fetchTweetPreview(url: string): Promise<TweetPreview | nul
 
     const handle = getTweetHandleFromUrl(url);
     const apiUrl = handle
-      ? `https://api.fxtwitter.com/${handle}/status/${tweetId}`
-      : `https://api.fxtwitter.com/status/${tweetId}`;
+      ? `https://api.fxtwitter.com/${handle}/status/${tweetId}/en`
+      : `https://api.fxtwitter.com/status/${tweetId}/en`;
     const parsed = (await fetchJsonThroughProxy(apiUrl)) as FxTweetApiResponse | null;
     const tweet = parsed?.tweet;
     if (!tweet) return buildFallbackTweetPreview(url);
