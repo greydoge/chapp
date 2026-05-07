@@ -27,6 +27,7 @@ Create a production build:
 ```bash
 cd app
 npm run build
+
 ```
 
 The built files are written to `app/dist/`.
@@ -38,6 +39,11 @@ Serve the production build locally:
 ```bash
 cd app
 npm run preview
+```
+
+To join with SSL, https://locahost:5173
+```bash
+HTTPS=1 npm run dev
 ```
 
 ## Test
