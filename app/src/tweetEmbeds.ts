@@ -36,6 +36,7 @@ export type TweetReply = {
   avatarUrl?: string;
   text: string;
   translationText?: string;
+  translationSourceLabel?: string;
   url: string;
   createdAt?: string;
   media: TweetMedia[];
@@ -48,6 +49,7 @@ export type TweetPreview = {
   avatarUrl?: string;
   text: string;
   translationText?: string;
+  translationSourceLabel?: string;
   createdAt?: string;
   media: TweetMedia[];
   reply?: TweetReply;
@@ -239,6 +241,49 @@ function getEnglishTranslation(tweet: FxTweet) {
   return translated;
 }
 
+const languageNames =
+  typeof Intl !== "undefined" && typeof Intl.DisplayNames === "function"
+    ? new Intl.DisplayNames(["en"], { type: "language" })
+    : null;
+
+function normalizeLanguageTag(tag: string) {
+  const trimmed = tag.trim().replace(/_/g, "-");
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+  if (lower === "mixed" || lower === "multi") return lower;
+
+  try {
+    return languageNames?.of(trimmed) ?? trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+function parseTranslationSources(sourceLang?: string | null) {
+  const raw = (sourceLang ?? "").trim();
+  if (!raw) return [];
+
+  const parts = raw
+    .split(/[,+/|&]+/)
+    .flatMap((part) => part.split(/\s+/))
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const normalized = parts.length > 0 ? parts : [raw];
+  const values = normalized
+    .map((part) => normalizeLanguageTag(part))
+    .filter((part): part is string => Boolean(part) && part !== "mixed" && part !== "multi");
+
+  return [...new Set(values)];
+}
+
+function getTranslationSourceLabel(tweet: FxTweet) {
+  const sourceLang = tweet.translation?.source_lang ?? tweet.lang ?? "";
+  const labels = parseTranslationSources(sourceLang);
+  if (labels.length === 0) return undefined;
+  return labels.join("/");
+}
+
 type FxTweetApiResponse = {
   code?: number;
   message?: string;
@@ -305,6 +350,7 @@ function buildRelatedTweet(related: FxTweet, fallbackUrl: string) {
     avatarUrl: related.author?.avatar_url,
     text: related.text ?? "",
     translationText: getEnglishTranslation(related),
+    translationSourceLabel: getTranslationSourceLabel(related),
     createdAt: related.created_at,
     media: buildMedia(related, rewriteTweetUrlToFxTwitter(related.url ?? fallbackUrl)),
     url: rewriteTweetUrlToFxTwitter(related.url ?? fallbackUrl),
@@ -324,6 +370,7 @@ export function buildTweetPreviewFromFxTweet(tweet: FxTweet, fallbackUrl: string
     avatarUrl: tweet.author?.avatar_url,
     text: tweet.text ?? "",
     translationText: getEnglishTranslation(tweet),
+    translationSourceLabel: getTranslationSourceLabel(tweet),
     createdAt: tweet.created_at,
     media: buildMedia(tweet, tweetUrl),
     quote: tweet.quote ? buildRelatedTweet(tweet.quote, tweetUrl) ?? undefined : undefined,

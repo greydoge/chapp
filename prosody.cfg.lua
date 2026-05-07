@@ -70,6 +70,7 @@ modules_enabled = {
 		"admin_shell"; -- Allow secure administration via 'prosodyctl shell'
 
 	-- HTTP modules
+		"http"; -- Built-in HTTP server used by WebSocket/file upload modules
 		--"bosh"; -- Enable BOSH clients, aka "Jabber over HTTP"
 		--"http_openmetrics"; -- for exposing metrics to stats collectors
 		"websocket"; -- XMPP over WebSockets
@@ -108,6 +109,7 @@ pidfile = "/run/prosody/prosody.pid";
 -- If false, other methods such as dialback (DNS) may be used instead.
 
 s2s_secure_auth = true
+consider_websocket_secure = true
 
 -- Some servers have invalid or self-signed certificates. You can list
 -- remote domains here that will not be required to authenticate using
@@ -230,16 +232,13 @@ certificates = "certs"
 -- Component definitions in their own config files. This line includes
 -- all config files in /etc/prosody/conf.d/
 
-c2s_require_encryption = false
+c2s_require_encryption = true
 allow_registration = false
+trusted_proxies = { "127.0.0.1", "::1" }
 
 VirtualHost "doge-cube.local"
-VirtualHost "localhost"
 -- Prosody requires at least one enabled VirtualHost to function. You can
 -- safely remove or disable 'localhost' once you have added another.
-
-
---VirtualHost "example.com"
 
 ------ Components ------
 -- You can specify components to add hosts that provide special services,
@@ -253,6 +252,7 @@ Component "conference.doge-cube.local" "muc"
 
 ---Set up a file sharing component
 --Component "share.example.com" "http_file_share"
+Component "upload.doge-cube.local" "http_file_share"
 
 ---Set up pubsub for Movim-style spaces / nodes
 Component "pubsub.doge-cube.local" "pubsub"

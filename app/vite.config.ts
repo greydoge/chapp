@@ -7,6 +7,8 @@ import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ServerOptions as HttpsServerOptions } from "node:https";
+import { buildInstagramEmbedUrl, extractInstagramPreviewFromHtml, normalizeInstagramUrl } from "./src/instagramEmbeds";
+import { extractTenorPreviewFromHtml, normalizeTenorUrl } from "./src/tenorEmbeds";
 
 const MAX_MEDIA_CACHE_ENTRIES = 8;
 
@@ -150,6 +152,95 @@ function tweetMediaProxyPlugin(): Plugin {
         res.statusCode = 502;
         res.setHeader("Content-Type", "text/plain; charset=utf-8");
         res.end(`Unable to load tweet preview: ${String(error)}`);
+      }
+      return true;
+    }
+    if (requestUrl.pathname === "/instagram-preview") {
+      const target = requestUrl.searchParams.get("url");
+      if (!target) {
+        res.statusCode = 400;
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        res.end("Missing url parameter.");
+        return true;
+      }
+
+      try {
+        const canonical = normalizeInstagramUrl(target);
+        const embedUrl = canonical ? buildInstagramEmbedUrl(canonical) : null;
+        const response = await fetch(embedUrl ?? target, {
+          method: "GET",
+          redirect: "follow",
+          headers: {
+            "User-Agent": typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : "Mozilla/5.0",
+            Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          },
+        });
+
+        const html = await response.text();
+        const preview = response.ok ? extractInstagramPreviewFromHtml(html, target) : null;
+        if (!preview) {
+          res.statusCode = 404;
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.setHeader("Cache-Control", "no-store");
+          res.end("null");
+          return true;
+        }
+
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Cache-Control", "no-store");
+        res.end(JSON.stringify(preview));
+      } catch (error) {
+        res.statusCode = 502;
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        res.setHeader("Cache-Control", "no-store");
+        res.end(`Unable to load Instagram preview: ${String(error)}`);
+      }
+      return true;
+    }
+    if (requestUrl.pathname === "/tenor-preview") {
+      const target = requestUrl.searchParams.get("url");
+      if (!target) {
+        res.statusCode = 400;
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        res.end("Missing url parameter.");
+        return true;
+      }
+
+      try {
+        const canonical = normalizeTenorUrl(target);
+        const response = await fetch(canonical ?? target, {
+          method: "GET",
+          redirect: "follow",
+          headers: {
+            "User-Agent": typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : "Mozilla/5.0",
+            Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          },
+        });
+
+        const html = await response.text();
+        const preview = response.ok ? extractTenorPreviewFromHtml(html, target) : null;
+        if (!preview) {
+          res.statusCode = 404;
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.setHeader("Cache-Control", "no-store");
+          res.end("null");
+          return true;
+        }
+
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Cache-Control", "no-store");
+        res.end(JSON.stringify(preview));
+      } catch (error) {
+        res.statusCode = 502;
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        res.setHeader("Cache-Control", "no-store");
+        res.end(`Unable to load Tenor preview: ${String(error)}`);
       }
       return true;
     }

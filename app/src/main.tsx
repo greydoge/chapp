@@ -93,6 +93,14 @@ import { buildYouTubeEmbedUrl, extractYouTubeUrls, getYouTubeVideoId, isYouTubeS
 import { buildTweetMediaProxyUrl } from "./tweetMedia";
 import { buildVideoEmbedSource, isLocalMediaUrl } from "./mediaEmbeds";
 import { buildFallbackTweetPreview, fetchTweetPreview, extractTweetUrls, rewriteTweetUrlToFxTwitter, splitTweetText } from "./tweetEmbeds";
+import { extractInstagramUrls, normalizeInstagramUrl } from "./instagramEmbeds";
+import {
+  buildFallbackTenorPreview,
+  extractTenorUrls,
+  fetchTenorPreview,
+  fetchTenorPreviewWithoutCache,
+  normalizeTenorUrl,
+} from "./tenorEmbeds";
 import { deriveRoomFingerprint, normalizeFingerprint } from "./fingerprint";
 import { shouldNotifyIncomingMessage } from "./notifications";
 import {
@@ -307,11 +315,13 @@ function getAvatarFallback(name: string, handle: string) {
 function TweetTextBlock({
   text,
   translationText,
+  translationSourceLabel,
   prefix,
   renderTweetText,
 }: {
   text: string;
   translationText?: string;
+  translationSourceLabel?: string;
   prefix: string;
   renderTweetText: (value: string, prefix: string) => React.ReactNode;
 }) {
@@ -329,7 +339,7 @@ function TweetTextBlock({
 
   useEffect(() => {
     setExpanded(false);
-  }, [showTranslation, originalText, englishText]);
+  }, [originalText, englishText]);
 
   const activeText = showTranslation && englishText ? englishText : originalText || englishText || "";
 
@@ -357,20 +367,25 @@ function TweetTextBlock({
 
   return (
     <div className="tweetTextBlock">
+      {hasTranslation && translationSourceLabel && (
+        <div className="tweetTranslationSource">
+          <em>translated from {translationSourceLabel}</em>
+        </div>
+      )}
       <p ref={measureRef} className="tweetTextClamped tweetTextMeasure" aria-hidden="true">
         {renderTweetText(activeText, showTranslation ? `${prefix}-translation` : prefix)}
       </p>
       <p className={!expanded ? "tweetTextClamped" : undefined}>
         {renderTweetText(activeText, showTranslation ? `${prefix}-translation` : prefix)}
       </p>
-      {(hasTranslation || canExpand) && (
+      {(hasTranslation || canExpand || expanded) && (
         <div className="tweetTextActions">
           {hasTranslation && (
             <button className="tweetTranslationToggle" type="button" onClick={() => setShowTranslation((current) => !current)}>
               Toggle translation
             </button>
           )}
-          {canExpand && (
+          {(canExpand || expanded) && (
             <button className="tweetTranslationToggle" type="button" onClick={() => setExpanded((current) => !current)}>
               {expanded ? "Collapse" : "Expand"}
             </button>
@@ -418,7 +433,13 @@ function RelatedTweetBlock({
           <ExternalLink size={14} />
         </a>
       </div>
-      <TweetTextBlock text={tweet.text} translationText={tweet.translationText} prefix={kind} renderTweetText={renderTweetText} />
+      <TweetTextBlock
+        text={tweet.text}
+        translationText={tweet.translationText}
+        translationSourceLabel={tweet.translationSourceLabel}
+        prefix={kind}
+        renderTweetText={renderTweetText}
+      />
       {tweet.media.length > 0 && (
         <div className={`tweetMediaGrid count-${Math.min(tweet.media.length, 4)}`}>{renderTweetMedia(tweet.media, kind)}</div>
       )}
@@ -486,6 +507,142 @@ function TweetVideoMedia({
       </video>
       {!loaded && <div className="tweetVideoLoading">Loading video...</div>}
     </div>
+  );
+}
+
+let instagramEmbedScriptPromise: Promise<void> | null = null;
+
+function loadInstagramEmbedScript() {
+  if (typeof document === "undefined") return Promise.resolve();
+  if ((window as Window & { instgrm?: { Embeds?: { process?: () => void } } }).instgrm?.Embeds?.process) {
+    return Promise.resolve();
+  }
+  if (instagramEmbedScriptPromise) return instagramEmbedScriptPromise;
+
+  instagramEmbedScriptPromise = new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>('script[src="https://www.instagram.com/embed.js"]');
+    if (existing) {
+      if ((window as Window & { instgrm?: { Embeds?: { process?: () => void } } }).instgrm?.Embeds?.process) {
+        resolve();
+        return;
+      }
+      existing.addEventListener("load", () => resolve(), { once: true });
+      existing.addEventListener("error", () => reject(new Error("Failed to load Instagram embed.js")), { once: true });
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://www.instagram.com/embed.js";
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Failed to load Instagram embed.js"));
+    document.body.appendChild(script);
+  });
+
+  return instagramEmbedScriptPromise;
+}
+
+function InstagramEmbed({ url }: { url: string }) {
+  const canonicalUrl = useMemo(() => normalizeInstagramUrl(url) ?? url, [url]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadInstagramEmbedScript()
+      .then(() => {
+        if (cancelled) return;
+        (window as Window & { instgrm?: { Embeds?: { process?: () => void } } }).instgrm?.Embeds?.process?.();
+      })
+      .catch((error) => {
+        console.debug("Instagram embed script failed to load", canonicalUrl, error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canonicalUrl]);
+
+  return (
+    <article className="instagramNativeCard">
+      <blockquote
+        className="instagram-media instagramNativeBlockquote"
+        data-instgrm-permalink={canonicalUrl}
+        data-instgrm-version="14"
+      >
+        <a href={canonicalUrl} target="_blank" rel="noreferrer">
+          Open on Instagram
+        </a>
+      </blockquote>
+    </article>
+  );
+}
+
+function TenorEmbed({ url }: { url: string }) {
+  const [preview, setPreview] = useState<NonNullable<Awaited<ReturnType<typeof fetchTenorPreview>>>>(
+    () => buildFallbackTenorPreview(url)!,
+  );
+  const [debugMessage, setDebugMessage] = useState<string | null>(null);
+  const canonicalUrl = useMemo(() => normalizeTenorUrl(url) ?? url, [url]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreview(buildFallbackTenorPreview(url)!);
+    setDebugMessage(null);
+
+    void fetchTenorPreview(url)
+      .then((result) => {
+        if (cancelled) return;
+        if (result) {
+          setPreview(result);
+          if (result.media.length === 0) {
+            setDebugMessage(`Tenor preview parsed with no media for ${result.url}. Retrying once without cache.`);
+            void fetchTenorPreviewWithoutCache(url).then((retryResult) => {
+              if (cancelled || !retryResult) return;
+              if (retryResult.media.length > 0) {
+                setPreview(retryResult);
+                setDebugMessage(null);
+              } else {
+                setDebugMessage(`Tenor preview parsed with no media for ${retryResult.url}.`);
+              }
+            });
+          }
+        } else {
+          setDebugMessage(`Tenor preview fetch returned nothing for ${canonicalUrl}.`);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPreview(buildFallbackTenorPreview(url)!);
+        setDebugMessage(`Tenor preview fetch failed for ${canonicalUrl}.`);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [url, canonicalUrl]);
+
+  const media = preview.media[0];
+
+  return (
+    <>
+      {media ? (
+        media.type === "image" ? (
+          <a className="imageEmbed tenorEmbed" href={canonicalUrl} target="_blank" rel="noreferrer">
+            <img src={media.url} alt={preview.title ?? preview.description ?? "Tenor GIF"} loading="lazy" />
+          </a>
+        ) : (
+          <a className="videoEmbed tenorEmbed tenorVideoEmbed" href={canonicalUrl} target="_blank" rel="noreferrer">
+            <video autoPlay muted loop playsInline controls preload="metadata" poster={media.posterUrl}>
+              <source src={media.url} />
+            </video>
+          </a>
+        )
+      ) : (
+        <a className="tenorFallbackLink" href={canonicalUrl} target="_blank" rel="noreferrer">
+          Open on Tenor
+        </a>
+      )}
+      {debugMessage && <div className="instagramDebug" title={debugMessage}>{debugMessage}</div>}
+    </>
   );
 }
 
@@ -688,7 +845,13 @@ function TweetEmbed({ url, onOpenImage }: { url: string; onOpenImage: (url: stri
         renderTweetMedia={renderTweetMedia}
       />
       <div className="tweetBody">
-        <TweetTextBlock text={preview.text} translationText={preview.translationText} prefix="tweet" renderTweetText={renderTweetText} />
+        <TweetTextBlock
+          text={preview.text}
+          translationText={preview.translationText}
+          translationSourceLabel={preview.translationSourceLabel}
+          prefix="tweet"
+          renderTweetText={renderTweetText}
+        />
       </div>
       {preview.media.length > 0 && (
         <div className={`tweetMediaGrid count-${Math.min(preview.media.length, 4)}`}>{renderTweetMedia(preview.media, "tweet")}</div>
@@ -740,6 +903,7 @@ type Modal =
   | "member"
   | "room"
   | "settings"
+  | "xmpp-account"
   | "attachment"
   | "clear-history"
   | null;
@@ -926,6 +1090,25 @@ function normalizeXmppConnectionSettings(
   };
 }
 
+function deriveXmppWebSocketUrl(target: string) {
+  const trimmed = target.trim();
+  if (!trimmed) return "";
+
+  const domain = trimmed.includes("@") ? trimmed.split("@").pop() ?? "" : trimmed;
+  if (!domain) return "";
+
+  const labels = domain.split(".").filter(Boolean);
+  if (labels.length >= 3 && labels[0] !== "xmpp") {
+    return `wss://xmpp.${labels.slice(1).join(".")}/xmpp-websocket`;
+  }
+
+  if (labels[0] === "xmpp") {
+    return `wss://${domain}/xmpp-websocket`;
+  }
+
+  return `wss://xmpp.${domain}/xmpp-websocket`;
+}
+
 const SETTINGS_KEY = "relayless.settings.v1";
 const MESSAGES_KEY = "relayless.messages.v1";
 
@@ -979,6 +1162,9 @@ function App() {
   );
   const [xmppConnectNonce, setXmppConnectNonce] = useState(0);
   const [xmppInviteUri, setXmppInviteUri] = useState("");
+  const [xmppAccountUsername, setXmppAccountUsername] = useState("");
+  const [xmppAccountDomain, setXmppAccountDomain] = useState("doge-cube.local");
+  const [xmppAccountPassword, setXmppAccountPassword] = useState("");
   const [newChannelName, setNewChannelName] = useState(storedSettings.newChannelName ?? "");
   const [newSubchannelName, setNewSubchannelName] = useState("");
   const [channelCreateKind, setChannelCreateKind] = useState<"text" | "voice">("text");
@@ -1032,7 +1218,7 @@ function App() {
   );
   const [status, setStatus] = useState<PeerStatus>("idle");
   const [events, setEvents] = useState<string[]>(
-    storedSettings.events?.length ? storedSettings.events.slice(0, 200) : ["Ready for XMPP federation."],
+    storedSettings.events?.length ? storedSettings.events.slice(0, 200) : ["Ready for local XMPP."],
   );
   const [keyFingerprint, setKeyFingerprint] = useState("calculating...");
   const [cryptoStatus, setCryptoStatus] = useState<"checking" | "available" | "unavailable">("checking");
@@ -1586,7 +1772,7 @@ function App() {
 
         if (cancelled) return;
         revokeAttachmentUrls();
-        setMessages(hydrateAttachmentUrls(restored));
+        setMessages(normalizeLoadedMessages(restored));
         setHistoryUnlocked(true);
         setHistoryPassphrase(passphrase);
         if (!isEncryptedMessageStore(parsed)) log("Migrated local history to encrypted storage.");
@@ -2361,9 +2547,8 @@ function App() {
   }, []);
 
   function addSystemMessage(body: string, channel = activeChannel, attachment?: ChatMessage["attachment"]) {
-    setMessages((current) => [
-      ...current,
-      {
+    setMessages((current) =>
+      appendMessageIfUnique(current, {
         id: crypto.randomUUID(),
         author: "System",
         body,
@@ -2371,8 +2556,8 @@ function App() {
         at: Date.now(),
         encrypted: true,
         attachment,
-      },
-    ]);
+      }),
+    );
   }
 
   function togglePinMessage(messageId: string) {
@@ -2543,6 +2728,7 @@ function App() {
   }
 
   const MAX_XMPP_PAYLOAD_CHARS = 48_000;
+  const MAX_ATTACHMENT_BYTES = 512 * 1024;
 
   function summarizeDebugString(value: string, limit = 240) {
     return value.length > limit ? `${value.slice(0, limit)}...[${value.length} chars]` : value;
@@ -2557,7 +2743,60 @@ function App() {
     }
   }
 
-  async function sendXmppEncryptedPayload(encrypted: WireMessage) {
+  function describePlainWirePayload(plain: PlainWirePayload) {
+    switch (plain.type) {
+      case "message":
+        return `chat message${plain.body ? ` (${summarizeDebugString(plain.body, 72)})` : ""}`;
+      case "attachment":
+        return `attachment ${plain.fileName} (${formatBytes(plain.size)})`;
+      case "attachment-chunk":
+        return `attachment chunk ${plain.fileName} ${plain.index + 1}/${plain.total}`;
+      case "rtc-signal":
+        return "voice signal";
+      case "receipt":
+        return "receipt";
+      case "reaction":
+        return "reaction";
+      case "edit":
+        return "edit";
+      case "note":
+        return "note";
+      case "delete":
+        return "delete";
+      case "channel-sync":
+        return `channel sync ${plain.action} #${plain.channelId}`;
+      case "server-sync":
+        return `server sync ${plain.action} ${plain.serverName}`;
+      case "voice-sync":
+        return "voice sync";
+      case "profile-sync":
+        return describeProfileSyncPayload(plain);
+      case "session-control":
+        return `session control ${plain.action}`;
+      case "media-sync":
+        return "media sync";
+      case "typing-sync":
+        return "typing sync";
+      case "read-sync":
+        return "read sync";
+    }
+    return "payload";
+  }
+
+  function describeProfileSyncPayload(plain: PlainWireProfileSync) {
+    const longFields = Object.entries(plain)
+      .filter(([key, value]) => {
+        if (typeof value !== "string") return false;
+        if (key === "type" || key === "id" || key === "author" || key === "channel" || key === "name" || key === "presence") return false;
+        return value.length > 1000;
+      })
+      .map(([key, value]) => `${key}=${(value as string).length}`);
+
+    if (longFields.length === 0) return "profile sync";
+    return `profile sync (${longFields.join(", ")})`;
+  }
+
+  async function sendXmppEncryptedPayload(encrypted: WireMessage, plain: PlainWirePayload) {
     const client = xmppClientRef.current;
     const room = xmppRoomRef.current?.trim();
     const space = xmppSpaceRef.current;
@@ -2565,7 +2804,7 @@ function App() {
 
     const payload = JSON.stringify(encrypted);
     if (payload.length > MAX_XMPP_PAYLOAD_CHARS) {
-      log(`XMPP payload too large to send live (${payload.length} chars).`);
+      log(`XMPP payload too large to send live (${payload.length} chars) for ${describePlainWirePayload(plain)}.`);
       return false;
     }
 
@@ -2695,6 +2934,23 @@ function App() {
     });
   }
 
+  function dedupeMessagesById(nextMessages: ChatMessage[]) {
+    const seen = new Set<string>();
+    return nextMessages.filter((message) => {
+      if (seen.has(message.id)) return false;
+      seen.add(message.id);
+      return true;
+    });
+  }
+
+  function normalizeLoadedMessages(nextMessages: ChatMessage[]) {
+    return hydrateAttachmentUrls(dedupeMessagesById(nextMessages));
+  }
+
+  function appendMessageIfUnique(current: ChatMessage[], nextMessage: ChatMessage) {
+    return current.some((message) => message.id === nextMessage.id) ? current : [...current, nextMessage];
+  }
+
   function applyImportedWorkspace(settings: WorkspaceBackupSettings, importedMessages: ChatMessage[]) {
     const nextServers = settings.servers?.length ? settings.servers : servers.length ? servers : [activeServer];
     const nextChannels = settings.channels?.length ? settings.channels : channels.length ? channels : DEFAULT_CHANNELS;
@@ -2732,6 +2988,7 @@ function App() {
     setXmppSpaceServiceJid(settings.xmppSpaceServiceJid ?? "");
     setXmppSpaceNode(settings.xmppSpaceNode ?? "");
     setXmppNick(settings.xmppNick ?? "");
+    log(`Loaded XMPP target: ${settings.xmppJid ?? "(no JID)"} via ${settings.xmppWebSocketUrl ?? "(no WebSocket URL)"}. Expected host/IP: doge-cube.local.`);
     setXmppConnectionSettings(
       normalizeXmppConnectionSettings(
         {
@@ -2800,7 +3057,7 @@ function App() {
     setGifTab("all");
     setGifQuery("");
     revokeAttachmentUrls();
-    setMessages(hydrateAttachmentUrls(importedMessages));
+    setMessages(normalizeLoadedMessages(importedMessages));
     setHistoryUnlocked(true);
     setHistoryPassphrase(passphrase);
     setFollowLatest(true);
@@ -2828,6 +3085,10 @@ function App() {
       dataUrl,
       objectUrl,
     };
+  }
+
+  function isAttachmentTooLarge(size: number) {
+    return size > MAX_ATTACHMENT_BYTES;
   }
 
   function formatVoiceAttachmentName(at: number, mimeType: string) {
@@ -3204,6 +3465,66 @@ function App() {
     setModal("room");
   }
 
+  function deriveXmppAccountDomain() {
+    const roomDomain = xmppRoomJid.trim().split("@", 2)[1] ?? "";
+    if (roomDomain) return roomDomain;
+
+    const spaceDomain = xmppSpaceServiceJid.trim().split("@", 2)[1] ?? "";
+    if (spaceDomain) return spaceDomain;
+
+    try {
+      const host = new URL(xmppWebSocketUrl.trim()).hostname.trim();
+      if (host.startsWith("xmpp.")) return host.slice("xmpp.".length);
+      return host || "doge-cube.local";
+    } catch {
+      return "doge-cube.local";
+    }
+  }
+
+  function openXmppAccountModal() {
+    const jid = xmppJid.trim();
+    const username = jid.includes("@") ? jid.split("@")[0] : jid;
+    setXmppAccountUsername(username);
+    setXmppAccountDomain(deriveXmppAccountDomain());
+    setXmppAccountPassword(xmppPassword);
+    setModal("xmpp-account");
+  }
+
+  function saveXmppAccountPrompt() {
+    const username = xmppAccountUsername.trim().replace(/^@+/, "");
+    const domain = xmppAccountDomain.trim().replace(/^@+/, "");
+    const password = xmppAccountPassword;
+    if (!username || !domain || !password) {
+      log("Fill the account username, domain, and password first.");
+      return;
+    }
+
+    const jid = username.includes("@") ? username : `${username}@${domain}`;
+    const nextXmppConnectionSettings = normalizeXmppConnectionSettings(
+      {
+        websocketUrl: xmppConnectionSettings.websocketUrl || xmppWebSocketUrl.trim() || deriveXmppWebSocketUrl(domain),
+        jid,
+        password,
+        roomJid: xmppConnectionSettings.roomJid || xmppRoomJid.trim(),
+        spaceServiceJid: xmppConnectionSettings.spaceServiceJid || xmppSpaceServiceJid.trim(),
+        spaceNode: xmppConnectionSettings.spaceNode || xmppSpaceNode.trim(),
+        nick: xmppNick,
+      },
+      name,
+    );
+
+    setXmppWebSocketUrl(nextXmppConnectionSettings.websocketUrl);
+    setXmppJid(nextXmppConnectionSettings.jid);
+    setXmppPassword(nextXmppConnectionSettings.password);
+    setXmppRoomJid(nextXmppConnectionSettings.roomJid);
+    setXmppSpaceServiceJid(nextXmppConnectionSettings.spaceServiceJid);
+    setXmppSpaceNode(nextXmppConnectionSettings.spaceNode);
+    setXmppConnectionSettings(nextXmppConnectionSettings);
+    setModal(null);
+    log(`Prepared XMPP account ${jid}.`);
+    setXmppConnectNonce((current) => current + 1);
+  }
+
   function openCreateServer() {
     setNewServerName("");
     setNewServerSubtitle(DEFAULT_SERVER_SUBTITLE);
@@ -3443,6 +3764,9 @@ function App() {
     setReactionPickerMessageId(null);
     setChannelCreateKind("text");
     setNewSubchannelName("");
+    setXmppAccountUsername("");
+    setXmppAccountDomain("doge-cube.local");
+    setXmppAccountPassword("");
   }
 
   function saveEditedMessage() {
@@ -3931,11 +4255,13 @@ function App() {
       setXmppSpaceServiceJid(roomJid);
       setXmppSpaceNode(node);
       setXmppRoomJid("");
+      setXmppWebSocketUrl((current) => current.trim() || deriveXmppWebSocketUrl(roomJid));
       log(`Invite node applied for ${roomJid} / ${node}.`);
     } else {
       setXmppRoomJid(roomJid);
       setXmppSpaceServiceJid("");
       setXmppSpaceNode("");
+      setXmppWebSocketUrl((current) => current.trim() || deriveXmppWebSocketUrl(roomJid));
       log(`Invite applied for ${roomJid}.`);
     }
   }
@@ -3971,19 +4297,11 @@ function App() {
       }
       const hasRoom = Boolean(room);
       const hasSpace = Boolean(spaceServiceJid || spaceNode);
-      if (jid || password || hasRoom || hasSpace) {
-        if (!websocketUrl || !jid || !password) {
-          throw new Error("Fill WebSocket URL, JID, and password or leave them blank.");
-        }
-        if (hasRoom && hasSpace) {
-          throw new Error("Use either a room JID or a space invite, not both.");
-        }
-        if (hasSpace && (!spaceServiceJid || !spaceNode)) {
-          throw new Error("Fill both the space service JID and node, or clear both.");
-        }
-        if (!hasRoom && !hasSpace) {
-          throw new Error("Fill either a room JID or a space invite, or leave them blank.");
-        }
+      if (hasRoom && hasSpace) {
+        throw new Error("Use either a room JID or a space invite, not both.");
+      }
+      if (hasSpace && (!spaceServiceJid || !spaceNode)) {
+        throw new Error("Fill both the space service JID and node, or clear both.");
       }
       setXmppConnectionSettings(nextXmppConnectionSettings);
       setModal(null);
@@ -3997,6 +4315,11 @@ function App() {
   }
 
   function connectXmpp() {
+    if (!xmppJid.trim() || !xmppPassword.trim()) {
+      openXmppAccountModal();
+      log("Create an XMPP account to connect, then try again.");
+      return;
+    }
     if (!saveSettings()) return;
     log("XMPP connect requested.");
     setXmppConnectNonce((current) => current + 1);
@@ -4021,6 +4344,9 @@ function App() {
     setXmppSpaceServiceJid("");
     setXmppSpaceNode("");
     setXmppNick("");
+    setXmppAccountUsername("");
+    setXmppAccountDomain("doge-cube.local");
+    setXmppAccountPassword("");
     setXmppConnectionSettings(
       normalizeXmppConnectionSettings(
         {
@@ -4169,7 +4495,7 @@ function App() {
     const key = await deriveKey(passphrase);
     const encrypted = await encryptPayload(key, plain);
 
-    if (xmppStatus === "connected" && (await sendXmppEncryptedPayload(encrypted))) {
+    if (xmppStatus === "connected" && (await sendXmppEncryptedPayload(encrypted, plain))) {
       processedWireIdsRef.current.add(plain.id);
       return true;
     }
@@ -4311,9 +4637,8 @@ function App() {
         return;
       }
 
-      setMessages((current) => [
-        ...current,
-        {
+      setMessages((current) =>
+        appendMessageIfUnique(current, {
           id: plain.id,
           author: plain.author,
           body: plain.type === "attachment" ? "" : plain.body,
@@ -4329,8 +4654,8 @@ function App() {
                   ...makeAttachment(plain.fileName, plain.mimeType, plain.size, plain.data),
                 }
               : undefined,
-        },
-      ]);
+        }),
+      );
       if (plain.channel !== activeChannel || document.visibilityState === "hidden") {
         setUnreadByChannel((current) => incrementUnreadCount(current, plain.channel));
       }
@@ -4449,9 +4774,8 @@ function App() {
   }
 
   function handleNote(note: PlainWireNote) {
-    setMessages((current) => [
-      ...current,
-      {
+    setMessages((current) =>
+      appendMessageIfUnique(current, {
         id: note.id,
         author: note.subject,
         body: note.body,
@@ -4459,8 +4783,8 @@ function App() {
         at: note.at,
         encrypted: true,
         note: true,
-      },
-    ]);
+      }),
+    );
     log(`${note.author} shared a profile note for ${note.subject}.`);
   }
 
@@ -4666,15 +4990,19 @@ function App() {
     nextAttachment: { fileName: string; mimeType: string; size: number; dataUrl: string },
     targetChannel: string,
   ) {
+    if (isAttachmentTooLarge(nextAttachment.size)) {
+      log(`Attachment rejected: ${nextAttachment.fileName} is too large (${formatBytes(nextAttachment.size)}; max ${formatBytes(MAX_ATTACHMENT_BYTES)}).`);
+      return false;
+    }
+
     const at = Date.now();
     const id = crypto.randomUUID();
     const attachment = {
       ...makeAttachment(nextAttachment.fileName, nextAttachment.mimeType, nextAttachment.size, nextAttachment.dataUrl),
     };
 
-    setMessages((current) => [
-      ...current,
-      {
+    setMessages((current) =>
+      appendMessageIfUnique(current, {
         id,
         author: name || "Anonymous",
         body: "",
@@ -4683,12 +5011,12 @@ function App() {
         local: true,
         encrypted: true,
         attachment,
-      },
-    ]);
+      }),
+    );
 
     log(`Attachment queued: ${nextAttachment.fileName}.`);
 
-    await sendAttachmentPayload({
+    return await sendAttachmentPayload({
       type: "attachment",
       id,
       author: name || "Anonymous",
@@ -4838,9 +5166,8 @@ function App() {
     if (!attachment) return;
 
     attachmentTransfersRef.current.delete(chunk.transferId);
-    setMessages((messages) => [
-      ...messages,
-      {
+    setMessages((current) =>
+      appendMessageIfUnique(current, {
         id: attachment.id,
         author: attachment.author,
         body: "",
@@ -4850,8 +5177,8 @@ function App() {
         attachment: {
           ...makeAttachment(attachment.fileName, attachment.mimeType, attachment.size, attachment.data),
         },
-      },
-    ]);
+      }),
+    );
     void sendReceipt(attachment.id, attachment.channel);
   }
 
@@ -4961,9 +5288,8 @@ function App() {
       replyToBody: replyToMessage?.body,
     };
 
-    setMessages((current) => [
-      ...current,
-      {
+    setMessages((current) =>
+      appendMessageIfUnique(current, {
         id: base.id,
         author: base.author,
         body,
@@ -4974,8 +5300,8 @@ function App() {
         replyToId: base.replyToId,
         replyToAuthor: base.replyToAuthor,
         replyToBody: base.replyToBody,
-      },
-    ]);
+      }),
+    );
     if (options.targetPaneIndex !== null && options.targetPaneIndex !== undefined) {
       setChatPaneDrafts((current) => current.map((draft, currentIndex) => (currentIndex === options.targetPaneIndex ? "" : draft)));
       setChatPaneReplyTargets((current) => current.map((target, currentIndex) => (currentIndex === options.targetPaneIndex ? null : target)));
@@ -5138,16 +5464,26 @@ function App() {
                 token.type === "text" ? (
                   renderInlineMarkdown(token.value, `${paragraphPrefix}-t-${paragraphIndex}-${lineIndex}-${tokenIndex}`)
                 ) : (
-                  [
-                    <a
-                      key={`${paragraphPrefix}-a-${paragraphIndex}-${lineIndex}-${tokenIndex}-${token.href}`}
-                      href={rewriteTweetUrlToFxTwitter(token.href)}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {rewriteTweetUrlToFxTwitter(token.label)}
-                    </a>,
-                  ]
+                  (() => {
+                    const normalizedInstagramHref = normalizeInstagramUrl(token.href);
+                    const normalizedTenorHref = normalizeTenorUrl(token.href);
+                    const normalizedHref = normalizedInstagramHref ?? normalizedTenorHref ?? rewriteTweetUrlToFxTwitter(token.href);
+                    const normalizedLabel =
+                      normalizeInstagramUrl(token.label) ??
+                      normalizeTenorUrl(token.label) ??
+                      rewriteTweetUrlToFxTwitter(token.label);
+
+                    return [
+                      <a
+                        key={`${paragraphPrefix}-a-${paragraphIndex}-${lineIndex}-${tokenIndex}-${token.href}`}
+                        href={normalizedHref}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {normalizedLabel}
+                      </a>,
+                    ];
+                  })()
                 ),
               ),
             ];
@@ -5205,10 +5541,18 @@ function App() {
     const videoUrls = extractVideoUrls(message.body);
     const audioUrls = extractAudioUrls(message.body);
     const youtubeUrls = extractYouTubeUrls(message.body);
+    const instagramUrls = extractInstagramUrls(message.body);
+    const tenorUrls = extractTenorUrls(message.body);
     const tweetUrls = extractTweetUrls(message.body);
     const mediaOnly =
       hasOnlyLinkTokens(message.body) &&
-      (imageUrls.length > 0 || videoUrls.length > 0 || audioUrls.length > 0 || youtubeUrls.length > 0 || tweetUrls.length > 0);
+      (imageUrls.length > 0 ||
+        videoUrls.length > 0 ||
+        audioUrls.length > 0 ||
+        youtubeUrls.length > 0 ||
+        instagramUrls.length > 0 ||
+        tenorUrls.length > 0 ||
+        tweetUrls.length > 0);
 
     return (
       <>
@@ -5257,12 +5601,18 @@ function App() {
               className={`youtubeEmbed ${isShort ? "youtubeShortEmbed" : ""}`}
               src={buildYouTubeEmbedUrl(videoId)}
               title={`YouTube video ${videoId}`}
-              allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+              allow="fullscreen"
               allowFullScreen
               loading="lazy"
             />
           );
         })}
+        {instagramUrls.map((url) => (
+          <InstagramEmbed key={url} url={url} />
+        ))}
+        {tenorUrls.map((url) => (
+          <TenorEmbed key={url} url={url} />
+        ))}
         {tweetUrls.map((url) => (
           <TweetEmbed key={url} url={url} onOpenImage={(url, alt) => setLightboxImage({ url, alt })} />
         ))}
@@ -5343,6 +5693,8 @@ function App() {
       </>
     );
   }
+
+  const pendingAttachmentTooLarge = Boolean(pendingAttachment && isAttachmentTooLarge(pendingAttachment.size));
 
   function renderChatWindowPane(channelId: string, paneIndex: number, paneCount: number) {
     const paneRefKey = `pane-${paneIndex}`;
@@ -6328,7 +6680,7 @@ function App() {
         </div>
         <div className="signalActions">
           <button type="button" onClick={applyXmppInviteUri}>
-            Apply invite
+            Use invite
           </button>
           <button type="button" onClick={() => setXmppInviteUri("")}>
             Clear invite
@@ -7188,6 +7540,7 @@ function App() {
                 {modal === "edit-message" && "Edit Message"}
                 {modal === "delete-message" && "Delete Message"}
                 {modal === "search" && "Search Messages"}
+                {modal === "xmpp-account" && "Create XMPP Account"}
                 {modal === "settings" && "User Settings"}
                 {modal === "attachment" && `Attach File to ${pendingAttachmentTargetLabel}`}
                 {modal === "clear-history" && "Clear History"}
@@ -7649,9 +8002,8 @@ function App() {
                         subject: selectedMember,
                         body,
                       };
-                      setMessages((current) => [
-                        ...current,
-                        {
+                      setMessages((current) =>
+                        appendMessageIfUnique(current, {
                           id: note.id,
                           author: selectedMember,
                           body: note.body,
@@ -7659,8 +8011,8 @@ function App() {
                           at: note.at,
                           encrypted: true,
                           note: true,
-                        },
-                      ]);
+                        }),
+                      );
                       setFollowLatest(true);
                       void sendEncryptedPayload(note);
                       log(`Shared a note about ${selectedMember}.`);
@@ -7708,6 +8060,39 @@ function App() {
                   </button>
                   <button className="primaryButton" type="button" onClick={() => void copyText(roomIdentityText(), "Copied room identity.")}>
                     Copy identity
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {modal === "xmpp-account" && (
+              <div className="modalBody">
+                <p className="modalCopy">
+                  Enter the XMPP account details you want to use on <strong>doge-cube.local</strong>. This app will
+                  build the JID from the username and domain, then connect with that account.
+                </p>
+                <label>
+                  Username
+                  <input value={xmppAccountUsername} onChange={(event) => setXmppAccountUsername(event.target.value)} autoFocus />
+                </label>
+                <label>
+                  Domain
+                  <input value={xmppAccountDomain} onChange={(event) => setXmppAccountDomain(event.target.value)} />
+                </label>
+                <label>
+                  Password
+                  <input
+                    value={xmppAccountPassword}
+                    onChange={(event) => setXmppAccountPassword(event.target.value)}
+                    type="password"
+                  />
+                </label>
+                <div className="modalActions">
+                  <button className="secondaryButton" type="button" onClick={closeModal}>
+                    Cancel
+                  </button>
+                  <button className="primaryButton" type="button" onClick={saveXmppAccountPrompt}>
+                    Save and connect
                   </button>
                 </div>
               </div>
@@ -7910,13 +8295,23 @@ function App() {
                     <strong>{pendingAttachment.fileName}</strong>
                     <span>{pendingAttachment.mimeType}</span>
                     <span>{formatBytes(pendingAttachment.size)}</span>
+                    {pendingAttachmentTooLarge && (
+                      <span className="attachmentError">
+                        Attachment rejected: files larger than {formatBytes(MAX_ATTACHMENT_BYTES)} cannot be sent.
+                      </span>
+                    )}
                   </div>
                 )}
                 <div className="modalActions">
                   <button className="secondaryButton" type="button" onClick={closeModal}>
                     Cancel
                   </button>
-                  <button className="primaryButton" type="button" onClick={sendPendingAttachment} disabled={!pendingAttachment}>
+                  <button
+                    className="primaryButton"
+                    type="button"
+                    onClick={sendPendingAttachment}
+                    disabled={!pendingAttachment || pendingAttachmentTooLarge}
+                  >
                     Send attachment
                   </button>
                 </div>
