@@ -18,6 +18,8 @@ export type WorkspaceBackupSettings = {
   xmppRoomJid?: string;
   xmppSpaceServiceJid?: string;
   xmppSpaceNode?: string;
+  audioInputDeviceId?: string;
+  audioOutputDeviceId?: string;
   xmppNick?: string;
   iceServersText?: string;
   membersOpen?: boolean;
@@ -44,6 +46,7 @@ export type WorkspaceBackupSettings = {
   avatarFrameUrl?: string;
   bannerUrl?: string;
   avatarAnimated?: boolean;
+  gifLibrary?: { id: string; label: string; source: string; url: string; tags?: string[] }[];
   chatPaneMode?: "single" | "split";
   chatPaneChannels?: string[];
   chatPaneDrafts?: string[];

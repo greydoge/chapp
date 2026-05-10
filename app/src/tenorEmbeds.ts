@@ -19,6 +19,7 @@ export type TenorPreview = {
   handle: string;
   title?: string;
   description?: string;
+  tags?: string[];
   media: TenorMedia[];
 };
 
@@ -52,6 +53,18 @@ function extractLinkHref(html: string, rel: string) {
   const pattern = new RegExp(`<link[^>]+rel=[\"']${rel}[\"'][^>]+href=[\"']([^\"']*)[\"']`, "i");
   const match = html.match(pattern);
   return match?.[1] ? decodeHtmlEntities(match[1]) : null;
+}
+
+function extractMetaKeywords(html: string) {
+  const pattern = /<meta[^>]+name=["']keywords["'][^>]+content=["']([^"']*)["']/i;
+  const match = html.match(pattern);
+  if (!match?.[1]) return [];
+
+  return match[1]
+    .split(",")
+    .map((tag) => tag.trim())
+    .map((tag) => tag.replace(/^#/, ""))
+    .filter(Boolean);
 }
 
 function stripTags(value: string) {
@@ -101,6 +114,7 @@ export function extractTenorPreviewFromHtml(html: string, url: string): TenorPre
   const title = extractMetaContent(html, "og:title") ?? extractMetaContent(html, "twitter:title") ?? null;
   const description =
     extractMetaContent(html, "og:description") ?? extractMetaContent(html, "twitter:description") ?? extractMetaContent(html, "description");
+  const tags = Array.from(new Set(extractMetaKeywords(html)));
   const authorName =
     html.match(/"author":"([^"]+)"/)?.[1] ??
     html.match(/"creator":"([^"]+)"/)?.[1] ??
@@ -133,6 +147,7 @@ export function extractTenorPreviewFromHtml(html: string, url: string): TenorPre
     handle: "tenor",
     title: title ? stripTags(title) : undefined,
     description: description ? stripTags(description) : undefined,
+    tags: tags.length > 0 ? tags : undefined,
     media,
   };
 }

@@ -37,7 +37,10 @@ export type PlainWireAttachmentChunk = Omit<WireMessage, "iv" | "ciphertext" | "
 
 export type PlainWireSignal = Omit<WireMessage, "iv" | "ciphertext" | "type"> & {
   type: "rtc-signal";
-  description: RTCSessionDescriptionInit;
+  originConnectionId?: string;
+  rtcSessionId?: string;
+  description?: RTCSessionDescriptionInit;
+  candidate?: RTCIceCandidateInit;
 };
 
 export type PlainWireReceipt = Omit<WireMessage, "iv" | "ciphertext" | "type"> & {
@@ -94,6 +97,7 @@ export type PlainWireVoiceSync = Omit<WireMessage, "iv" | "ciphertext" | "type">
 
 export type PlainWireProfileSync = Omit<WireMessage, "iv" | "ciphertext" | "type"> & {
   type: "profile-sync";
+  connectionId?: string;
   name: string;
   presence: string;
   about?: string;

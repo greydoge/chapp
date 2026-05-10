@@ -1,6 +1,7 @@
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import * as XMPP from "stanza";
+import { DataFormFieldType, DataFormType } from "stanza/Constants";
 import { NS_JSON_0 } from "stanza/Namespaces";
 import {
   Bell,
@@ -81,6 +82,7 @@ import { isNearBottom } from "./scroll";
 import { createWorkspaceBackup, parseWorkspaceBackup, type WorkspaceBackupSettings } from "./backup";
 import { shouldSubmitComposerMessage } from "./composer";
 import { hasOnlyLinkTokens, splitMessageText } from "./messageLinks";
+import { extractMentionedMemberNames, splitTextWithMentions } from "./messageMentions";
 import {
   extractAudioUrls,
   extractImageUrls,
@@ -90,10 +92,11 @@ import {
   isVideoMimeType,
 } from "./imageEmbeds";
 import { buildYouTubeEmbedUrl, extractYouTubeUrls, getYouTubeVideoId, isYouTubeShortUrl } from "./youtubeEmbeds";
-import { buildTweetMediaProxyUrl } from "./tweetMedia";
+import { buildTweetMediaProxyUrl, normalizeTweetMediaUrl } from "./tweetMedia";
 import { buildVideoEmbedSource, isLocalMediaUrl } from "./mediaEmbeds";
 import { buildFallbackTweetPreview, fetchTweetPreview, extractTweetUrls, rewriteTweetUrlToFxTwitter, splitTweetText } from "./tweetEmbeds";
 import { extractInstagramUrls, normalizeInstagramUrl } from "./instagramEmbeds";
+import { extractIframeEmbeds, stripIframeEmbeds } from "./iframeEmbeds";
 import {
   buildFallbackTenorPreview,
   extractTenorUrls,
@@ -132,7 +135,15 @@ import "./styles.css";
 
 type ResolvedTweetPreview = NonNullable<Awaited<ReturnType<typeof fetchTweetPreview>>>;
 
-const GIPHY_FREE_GIFS = [
+type GifCatalogEntry = {
+  id: string;
+  label: string;
+  source: string;
+  url: string;
+  tags?: string[];
+};
+
+const GIPHY_FREE_GIFS: GifCatalogEntry[] = [
   {
     id: "bounce",
     label: "Free",
@@ -576,11 +587,20 @@ function InstagramEmbed({ url }: { url: string }) {
   );
 }
 
-function TenorEmbed({ url }: { url: string }) {
+function TenorEmbed({
+  url,
+  onFavorite,
+  favorited = false,
+}: {
+  url: string;
+  onFavorite?: (gif: { url: string; label: string; source: string; tags?: string[] }) => void;
+  favorited?: boolean;
+}) {
   const [preview, setPreview] = useState<NonNullable<Awaited<ReturnType<typeof fetchTenorPreview>>>>(
     () => buildFallbackTenorPreview(url)!,
   );
   const [debugMessage, setDebugMessage] = useState<string | null>(null);
+  const [localFavorited, setLocalFavorited] = useState(favorited);
   const canonicalUrl = useMemo(() => normalizeTenorUrl(url) ?? url, [url]);
 
   useEffect(() => {
@@ -620,22 +640,46 @@ function TenorEmbed({ url }: { url: string }) {
     };
   }, [url, canonicalUrl]);
 
+  useEffect(() => {
+    setLocalFavorited(favorited);
+  }, [favorited, canonicalUrl]);
+
   const media = preview.media[0];
+  const gifLabel = preview.title ?? preview.description ?? "Tenor GIF";
+  const effectiveFavorited = localFavorited;
 
   return (
     <>
       {media ? (
-        media.type === "image" ? (
-          <a className="imageEmbed tenorEmbed" href={canonicalUrl} target="_blank" rel="noreferrer">
-            <img src={media.url} alt={preview.title ?? preview.description ?? "Tenor GIF"} loading="lazy" />
-          </a>
-        ) : (
-          <a className="videoEmbed tenorEmbed tenorVideoEmbed" href={canonicalUrl} target="_blank" rel="noreferrer">
-            <video autoPlay muted loop playsInline controls preload="metadata" poster={media.posterUrl}>
-              <source src={media.url} />
-            </video>
-          </a>
-        )
+        <GifMessageCard
+          href={canonicalUrl}
+          label={gifLabel}
+          favorited={effectiveFavorited}
+          onFavorite={
+            onFavorite
+              ? () => {
+                  setLocalFavorited((current) => !current);
+                  onFavorite({ url: media.url, label: gifLabel, source: "Tenor", tags: preview.tags ?? [] });
+                }
+              : undefined
+          }
+          favoriteAriaLabel={effectiveFavorited ? `Remove ${gifLabel} from favorites` : `Add ${gifLabel} to favorites`}
+          media={
+            media.type === "image"
+              ? {
+                  kind: "image",
+                  src: media.url,
+                  alt: gifLabel,
+                }
+              : {
+                  kind: "video",
+                  src: media.url,
+                  posterUrl: media.posterUrl,
+                }
+          }
+          mediaClassName="tenorEmbed"
+          mediaLinkClassName={media.type === "image" ? "imageEmbed" : "videoEmbed tenorVideoEmbed"}
+        />
       ) : (
         <a className="tenorFallbackLink" href={canonicalUrl} target="_blank" rel="noreferrer">
           Open on Tenor
@@ -643,6 +687,79 @@ function TenorEmbed({ url }: { url: string }) {
       )}
       {debugMessage && <div className="instagramDebug" title={debugMessage}>{debugMessage}</div>}
     </>
+  );
+}
+
+type GifMessageCardMedia =
+  | {
+      kind: "image";
+      src: string;
+      alt: string;
+    }
+  | {
+      kind: "video";
+      src: string;
+      posterUrl?: string;
+    };
+
+function GifMessageCard({
+  href,
+  label,
+  media,
+  favorited = false,
+  onFavorite,
+  onMediaClick,
+  favoriteAriaLabel,
+  mediaClassName = "",
+  mediaLinkClassName = "imageEmbed tenorEmbed",
+}: {
+  href: string;
+  label: string;
+  media: GifMessageCardMedia;
+  favorited?: boolean;
+  onFavorite?: () => void;
+  onMediaClick?: () => void;
+  favoriteAriaLabel: string;
+  mediaClassName?: string;
+  mediaLinkClassName?: string;
+}) {
+  return (
+    <div className="gifMessageCard">
+      <a
+        className={`${mediaLinkClassName} ${mediaClassName}`.trim()}
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        onClick={(event) => {
+          if (!onMediaClick) return;
+          event.preventDefault();
+          onMediaClick();
+        }}
+      >
+        {media.kind === "image" ? (
+          <img src={media.src} alt={label} loading="lazy" />
+        ) : (
+          <video autoPlay muted loop playsInline controls preload="metadata" poster={media.posterUrl}>
+            <source src={media.src} />
+          </video>
+        )}
+      </a>
+      {onFavorite && (
+        <button
+          type="button"
+          className={`gifFavorite messageGifFavorite ${favorited ? "active" : ""}`}
+          aria-label={favoriteAriaLabel}
+          tabIndex={-1}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onFavorite();
+          }}
+        >
+          <Star size={24} fill={favorited ? "currentColor" : "none"} />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -961,6 +1078,11 @@ type XmppRoomOccupant = {
   self?: boolean;
 };
 
+type RtcSignalPayload = {
+  description?: RTCSessionDescriptionInit;
+  candidate?: RTCIceCandidateInit;
+};
+
 type StoredSettings = {
   activeServer?: string;
   activeChannelsByServer?: Record<string, string>;
@@ -975,7 +1097,8 @@ type StoredSettings = {
   xmppRoomJid?: string;
   xmppSpaceServiceJid?: string;
   xmppSpaceNode?: string;
-  xmppNick?: string;
+  audioInputDeviceId?: string;
+  audioOutputDeviceId?: string;
   iceServersText?: string;
   membersOpen?: boolean;
   notificationsMuted?: boolean;
@@ -1013,6 +1136,7 @@ type StoredSettings = {
   servers?: string[];
   unreadByChannel?: Record<string, number>;
   gifFavorites?: string[];
+  gifLibrary?: GifCatalogEntry[];
   mainTab?: "chat" | "session";
   events?: string[];
   avatarUrl?: string;
@@ -1077,7 +1201,7 @@ function normalizeChatPaneCompactSections(nextSections: boolean[] | undefined, p
 
 function normalizeXmppConnectionSettings(
   settings: Pick<XmppConnectionSettings, "websocketUrl" | "jid" | "password" | "roomJid" | "spaceServiceJid" | "spaceNode" | "nick">,
-  fallbackNick: string,
+  fallbackDisplayName: string,
 ): XmppConnectionSettings {
   return {
     websocketUrl: settings.websocketUrl.trim(),
@@ -1086,7 +1210,7 @@ function normalizeXmppConnectionSettings(
     roomJid: settings.roomJid.trim(),
     spaceServiceJid: settings.spaceServiceJid.trim(),
     spaceNode: settings.spaceNode.trim(),
-    nick: settings.nick.trim() || fallbackNick.trim() || DEFAULT_NAME,
+    nick: settings.nick.trim() || fallbackDisplayName.trim() || DEFAULT_NAME,
   };
 }
 
@@ -1145,7 +1269,10 @@ function App() {
   const [xmppRoomJid, setXmppRoomJid] = useState(storedSettings.xmppRoomJid ?? "");
   const [xmppSpaceServiceJid, setXmppSpaceServiceJid] = useState(storedSettings.xmppSpaceServiceJid ?? "");
   const [xmppSpaceNode, setXmppSpaceNode] = useState(storedSettings.xmppSpaceNode ?? "");
-  const [xmppNick, setXmppNick] = useState(storedSettings.xmppNick ?? "");
+  const [audioInputDeviceId, setAudioInputDeviceId] = useState(storedSettings.audioInputDeviceId ?? "");
+  const [audioOutputDeviceId, setAudioOutputDeviceId] = useState(storedSettings.audioOutputDeviceId ?? "");
+  const [audioInputDevices, setAudioInputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [audioOutputDevices, setAudioOutputDevices] = useState<MediaDeviceInfo[]>([]);
   const [xmppConnectionSettings, setXmppConnectionSettings] = useState<XmppConnectionSettings>(() =>
     normalizeXmppConnectionSettings(
       {
@@ -1155,7 +1282,7 @@ function App() {
         roomJid: storedSettings.xmppRoomJid ?? "",
         spaceServiceJid: storedSettings.xmppSpaceServiceJid ?? "",
         spaceNode: storedSettings.xmppSpaceNode ?? "",
-        nick: storedSettings.xmppNick ?? "",
+        nick: "",
       },
       storedSettings.name ?? DEFAULT_NAME,
     ),
@@ -1165,6 +1292,7 @@ function App() {
   const [xmppAccountUsername, setXmppAccountUsername] = useState("");
   const [xmppAccountDomain, setXmppAccountDomain] = useState("doge-cube.local");
   const [xmppAccountPassword, setXmppAccountPassword] = useState("");
+  const xmppCreateAccountRequestedRef = useRef(false);
   const [newChannelName, setNewChannelName] = useState(storedSettings.newChannelName ?? "");
   const [newSubchannelName, setNewSubchannelName] = useState("");
   const [channelCreateKind, setChannelCreateKind] = useState<"text" | "voice">("text");
@@ -1218,7 +1346,7 @@ function App() {
   );
   const [status, setStatus] = useState<PeerStatus>("idle");
   const [events, setEvents] = useState<string[]>(
-    storedSettings.events?.length ? storedSettings.events.slice(0, 200) : ["Ready for local XMPP."],
+    storedSettings.events?.length ? storedSettings.events.slice(0, 200) : [`${formatEventStamp()} Ready for local XMPP.`],
   );
   const [keyFingerprint, setKeyFingerprint] = useState("calculating...");
   const [cryptoStatus, setCryptoStatus] = useState<"checking" | "available" | "unavailable">("checking");
@@ -1299,6 +1427,7 @@ function App() {
   const [peerAvatarFrameUrl, setPeerAvatarFrameUrl] = useState("");
   const [peerBannerUrl, setPeerBannerUrl] = useState("");
   const [peerAvatarAnimated, setPeerAvatarAnimated] = useState(false);
+  const [peerConnectionId, setPeerConnectionId] = useState("");
   const [peerNotificationsMuted, setPeerNotificationsMuted] = useState(false);
   const [peerMembersOpen, setPeerMembersOpen] = useState(true);
   const [peerActiveServer, setPeerActiveServer] = useState("unknown");
@@ -1311,6 +1440,7 @@ function App() {
   const prevXmppStatusRef = useRef(xmppStatus);
   const [remoteMediaActive, setRemoteMediaActive] = useState(false);
   const [remoteVideoActive, setRemoteVideoActive] = useState(false);
+  const [remoteAudioBlocked, setRemoteAudioBlocked] = useState(false);
   const [localAudioLevel, setLocalAudioLevel] = useState(0);
   const [peerAudioLevel, setPeerAudioLevel] = useState(0);
   const [followLatest, setFollowLatest] = useState(true);
@@ -1320,24 +1450,86 @@ function App() {
   const [unreadByChannel, setUnreadByChannel] = useState<UnreadCounts>(storedSettings.unreadByChannel ?? {});
   const [recentEmojis, setRecentEmojis] = useState<string[]>(storedSettings.recentEmojis ?? defaultRecentEmojis);
   const [gifFavorites, setGifFavorites] = useState<string[]>(storedSettings.gifFavorites ?? []);
+  const [gifLibrary, setGifLibrary] = useState<GifCatalogEntry[]>(storedSettings.gifLibrary ?? []);
   const [cameraActive, setCameraActive] = useState(false);
   const activeServerSubtitle = serverSubtitles[activeServer]?.trim() || DEFAULT_SERVER_SUBTITLE;
   const localMemberName = name.trim() || DEFAULT_NAME;
+  const [connectionId] = useState(() => crypto.randomUUID());
+  const canSelectAudioOutput = typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
   const selectedMemberIsLocal = selectedMember === localMemberName || selectedMember === "You";
   const selectedMemberIsPeer = selectedMember === peerName;
   const memberRoster = useMemo(() => {
     const roomMembers = Object.values(xmppRoomOccupants)
       .sort((left, right) => Number(Boolean(right.self)) - Number(Boolean(left.self)) || left.nick.localeCompare(right.nick))
       .map((occupant) => (occupant.self ? localMemberName : occupant.nick));
-
     if (roomMembers.length > 0) {
       return Array.from(new Set(roomMembers));
     }
 
-    const fallbackMembers = [localMemberName, ...baseMembers];
-    if (!peerName.trim() || fallbackMembers.includes(peerName)) return fallbackMembers;
-    return [localMemberName, peerName, ...baseMembers];
+    const fallbackMembers = [localMemberName, peerName, ...baseMembers].filter((member, index, all) => member.trim() && all.indexOf(member) === index);
+    return fallbackMembers;
   }, [localMemberName, peerName, xmppRoomOccupants]);
+  const canonicalGifUrl = (url: string) => {
+    const normalizedTweetMediaUrl = normalizeTweetMediaUrl(url);
+    return normalizeTenorUrl(normalizedTweetMediaUrl) ?? normalizedTweetMediaUrl;
+  };
+  const allGifEntries = useMemo(() => {
+    const seen = new Set<string>();
+    return [...GIPHY_FREE_GIFS, ...gifLibrary].filter((gif) => {
+      const key = canonicalGifUrl(gif.url).toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [gifLibrary]);
+
+  useEffect(() => {
+    const staleTenorEntries = gifLibrary.filter((gif) => gif.source === "Tenor" && normalizeTenorUrl(gif.url));
+    if (staleTenorEntries.length === 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      const updates = await Promise.all(
+        staleTenorEntries.map(async (gif) => {
+          const preview = await fetchTenorPreviewWithoutCache(gif.url);
+          const media = preview?.media?.[0];
+          if (!media?.url) return null;
+          return { id: gif.id, url: media.url };
+        }),
+      );
+
+      if (cancelled) return;
+
+      const updateMap = new Map(
+        updates.filter((entry): entry is { id: string; url: string } => Boolean(entry)).map((entry) => [entry.id, entry.url] as const),
+      );
+      if (updateMap.size === 0) return;
+
+      setGifLibrary((current) =>
+        current.map((gif) => {
+          const nextUrl = updateMap.get(gif.id);
+          return nextUrl ? { ...gif, url: nextUrl } : gif;
+        }),
+      );
+      log(`Repaired ${updateMap.size} saved Tenor GIF${updateMap.size === 1 ? "" : "s"}.`);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gifLibrary]);
+  useEffect(() => {
+    const staleProxyEntries = gifLibrary.filter((gif) => normalizeTweetMediaUrl(gif.url) !== gif.url.trim());
+    if (staleProxyEntries.length === 0) return;
+
+    setGifLibrary((current) =>
+      current.map((gif) => {
+        const nextUrl = normalizeTweetMediaUrl(gif.url);
+        return nextUrl !== gif.url.trim() ? { ...gif, url: nextUrl } : gif;
+      }),
+    );
+    log(`Repaired ${staleProxyEntries.length} saved GIF${staleProxyEntries.length === 1 ? "" : "s"} from tweet-media proxies.`);
+  }, [gifLibrary]);
   const nestedChannelIds = useMemo(
     () => new Set(Object.values(channelChildren).flat()),
     [channelChildren],
@@ -1438,6 +1630,13 @@ function App() {
   const xmppClientRef = useRef<XMPP.Agent | null>(null);
   const xmppRoomRef = useRef<string | null>(null);
   const xmppSpaceRef = useRef<{ serviceJid: string; node: string } | null>(null);
+  const makingOfferRef = useRef(false);
+  const peerPoliteRef = useRef(false);
+  const pendingRemoteCandidatesRef = useRef<Array<{ rtcSessionId: string | null; candidate: RTCIceCandidateInit }>>([]);
+  const pendingRtcSignalsRef = useRef<RtcSignalPayload[]>([]);
+  const flushingRtcSignalsRef = useRef(false);
+  const xmppTransportReadyRef = useRef(false);
+  const micSenderRef = useRef<RTCRtpSender | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const channelScrollPositionsRef = useRef<Record<string, number>>({});
   const restoredScrollChannelRef = useRef<string | null>(null);
@@ -1462,6 +1661,8 @@ function App() {
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream>(new MediaStream());
+  const remoteAudioStreamRef = useRef<MediaStream>(new MediaStream());
+  const rtcSessionIdRef = useRef<string | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const localCameraVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -1471,6 +1672,10 @@ function App() {
   const peerAudioContextRef = useRef<AudioContext | null>(null);
   const peerAudioFrameRef = useRef<number | null>(null);
   const renegotiatingRef = useRef(false);
+  const mediaNegotiationQueuedRef = useRef(false);
+  const mediaNegotiationTimerRef = useRef<number | null>(null);
+  const roomOffererRef = useRef<boolean | null>(null);
+  const roomRoleLockedRef = useRef(false);
   const attachmentTransfersRef = useRef<Map<string, AttachmentTransfer>>(new Map());
   const processedWireIdsRef = useRef<Set<string>>(new Set());
   const messagesRef = useRef<ChatMessage[]>(DEFAULT_MESSAGES);
@@ -1544,21 +1749,23 @@ function App() {
   const gifSearchTerm = gifQuery.trim().toLowerCase();
   const gifMatches = useMemo(
     () =>
-      GIPHY_FREE_GIFS.filter((gif) => `${gif.label} ${gif.source} ${gif.url}`.toLowerCase().includes(gifSearchTerm)).map((gif) => ({
+      allGifEntries
+        .filter((gif) => `${gif.label} ${gif.source} ${gif.url} ${(gif.tags ?? []).join(" ")}`.toLowerCase().includes(gifSearchTerm))
+        .map((gif) => ({
         ...gif,
         favorite: gifFavorites.includes(gif.id),
       })),
-    [gifFavorites, gifSearchTerm],
+    [allGifEntries, gifFavorites, gifSearchTerm],
   );
   const favoriteGifs = useMemo(
     () =>
-      GIPHY_FREE_GIFS.filter((gif) => gifFavorites.includes(gif.id))
-        .filter((gif) => `${gif.label} ${gif.source} ${gif.url}`.toLowerCase().includes(gifSearchTerm))
+      allGifEntries.filter((gif) => gifFavorites.includes(gif.id))
+        .filter((gif) => `${gif.label} ${gif.source} ${gif.url} ${(gif.tags ?? []).join(" ")}`.toLowerCase().includes(gifSearchTerm))
         .map((gif) => ({
           ...gif,
           favorite: true,
         })),
-    [gifFavorites, gifSearchTerm],
+    [allGifEntries, gifFavorites, gifSearchTerm],
   );
   const visibleGifs = gifTab === "favorites" ? favoriteGifs : gifMatches;
   const gifColumns = useMemo(() => {
@@ -1633,7 +1840,8 @@ function App() {
         xmppRoomJid,
         xmppSpaceServiceJid,
         xmppSpaceNode,
-        xmppNick,
+        audioInputDeviceId,
+        audioOutputDeviceId,
         editDraftByMessage,
         newChannelName,
         newServerName,
@@ -1647,6 +1855,7 @@ function App() {
         roomPeerFingerprint,
         recentEmojis,
         gifFavorites,
+        gifLibrary,
         avatarUrl,
         avatarFrameUrl,
         bannerUrl,
@@ -1701,6 +1910,7 @@ function App() {
     roomPeerFingerprint,
     recentEmojis,
     gifFavorites,
+    gifLibrary,
     avatarUrl,
     avatarFrameUrl,
     bannerUrl,
@@ -1721,7 +1931,8 @@ function App() {
     xmppRoomJid,
     xmppSpaceServiceJid,
     xmppSpaceNode,
-    xmppNick,
+    audioInputDeviceId,
+    audioOutputDeviceId,
     iceServersText,
     membersOpen,
     name,
@@ -1817,6 +2028,8 @@ function App() {
     xmppClientRef.current = null;
     xmppRoomRef.current = null;
     xmppSpaceRef.current = null;
+    xmppTransportReadyRef.current = false;
+    setPeerConnectionId("");
     setXmppRoomOccupants({});
     setXmppSelfNick("");
 
@@ -1860,6 +2073,80 @@ function App() {
 
     xmppClientRef.current = client;
 
+    if (xmppCreateAccountRequestedRef.current) {
+      client.registerFeature("inbandRegistration", 50, async (features, done) => {
+        if (!xmppCreateAccountRequestedRef.current) {
+          done();
+          return;
+        }
+        if (!features.inbandRegistration) {
+          done();
+          return;
+        }
+
+        const accountUsername = xmppAccountUsername.trim().replace(/^@+/, "");
+        const accountDomain = xmppAccountDomain.trim().replace(/^@+/, "");
+        const accountPassword = xmppAccountPassword;
+        if (!accountUsername || !accountDomain || !accountPassword) {
+          xmppCreateAccountRequestedRef.current = false;
+          done("disconnect", "missing account registration fields");
+          return;
+        }
+
+        try {
+          const registrationInfo = await client.sendIQ({
+            type: "get",
+            to: accountDomain,
+            account: {},
+          });
+          const instructions = registrationInfo.account?.instructions?.trim();
+          if (instructions && !cancelled) {
+            log(`XMPP registration instructions: ${instructions}`);
+          }
+          const response = await client.sendIQ({
+            type: "set",
+            to: accountDomain,
+            account: {
+              form: {
+                type: DataFormType.Submit,
+                fields: [
+                  {
+                    name: "FORM_TYPE",
+                    type: DataFormFieldType.Hidden,
+                    value: "jabber:iq:register",
+                  },
+                  {
+                    name: "username",
+                    type: DataFormFieldType.Text,
+                    value: accountUsername,
+                  },
+                  {
+                    name: "password",
+                    type: DataFormFieldType.TextPrivate,
+                    value: accountPassword,
+                  },
+                ],
+              },
+            },
+          });
+          xmppCreateAccountRequestedRef.current = false;
+          if (!cancelled) {
+            const detail = describeXmppFailure(response);
+            log(`Created XMPP account ${accountUsername}@${accountDomain}${detail && detail !== "unknown error" ? ` (${detail})` : ""}.`);
+          }
+          done("restart");
+        } catch (error) {
+          xmppCreateAccountRequestedRef.current = false;
+          if (!cancelled) {
+            setXmppStatus("failed");
+            const detail = describeXmppFailure(error);
+            log(`Could not create XMPP account: ${detail}.`);
+          }
+          done("disconnect", "account registration failed");
+        }
+      });
+    }
+
     client.on("stream:start", () => {
       if (!cancelled) log("XMPP stream started.");
     });
@@ -1880,15 +2167,20 @@ function App() {
         if (spaceServiceJid && spaceNode) {
           await client.subscribeToNode(spaceServiceJid, { node: spaceNode });
           xmppSpaceRef.current = { serviceJid: spaceServiceJid, node: spaceNode };
+          xmppTransportReadyRef.current = true;
           if (!cancelled) setXmppStatus("connected");
           log(`XMPP space subscribed: ${spaceServiceJid} / ${spaceNode}.`);
+          void flushRtcSignals();
         } else {
           xmppRoomRef.current = room;
-          await client.joinRoom(room, xmppConnectionSettings.nick);
+          await client.joinRoom(room, localMemberName);
+          xmppTransportReadyRef.current = true;
           if (!cancelled) setXmppStatus("connected");
           log(`XMPP room connected: ${room}.`);
+          void flushRtcSignals();
         }
       } catch (error) {
+        xmppTransportReadyRef.current = false;
         if (!cancelled) setXmppStatus("failed");
         const detail = describeXmppFailure(error);
         log(spaceServiceJid && spaceNode ? `Could not join the XMPP space: ${detail}.` : `Could not join the XMPP room: ${detail}.`);
@@ -2021,6 +2313,9 @@ function App() {
     if (prevXmppStatusRef.current === xmppStatus) return;
     prevXmppStatusRef.current = xmppStatus;
     log(`XMPP status: ${xmppStatus}`);
+    if (xmppStatus === "connected") {
+      void flushRtcSignals();
+    }
   }, [xmppStatus]);
 
   useEffect(() => {
@@ -2428,6 +2723,12 @@ function App() {
 
   useEffect(() => {
     return () => {
+      if (mediaNegotiationTimerRef.current !== null) {
+        window.clearTimeout(mediaNegotiationTimerRef.current);
+        mediaNegotiationTimerRef.current = null;
+      }
+      mediaNegotiationQueuedRef.current = false;
+      rtcSessionIdRef.current = null;
       stopLocalMedia();
       clearRemoteMedia();
       stopAudioMeter();
@@ -2440,9 +2741,67 @@ function App() {
 
   useEffect(() => {
     if (!remoteAudioRef.current) return;
-    remoteAudioRef.current.srcObject = remoteStreamRef.current;
+    remoteAudioRef.current.srcObject = remoteAudioStreamRef.current;
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStreamRef.current;
+    void applyAudioOutputDevice();
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function updateAudioDevices() {
+      if (!navigator.mediaDevices?.enumerateDevices) return;
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        if (cancelled) return;
+        setAudioInputDevices(devices.filter((device) => device.kind === "audioinput"));
+        setAudioOutputDevices(devices.filter((device) => device.kind === "audiooutput"));
+      } catch {
+        if (!cancelled) {
+          setAudioInputDevices([]);
+          setAudioOutputDevices([]);
+        }
+      }
+    }
+
+    void updateAudioDevices();
+    navigator.mediaDevices?.addEventListener?.("devicechange", updateAudioDevices);
+    return () => {
+      cancelled = true;
+      navigator.mediaDevices?.removeEventListener?.("devicechange", updateAudioDevices);
+    };
+  }, []);
+
+  useEffect(() => {
+    void applyAudioOutputDevice();
+  }, [audioOutputDeviceId]);
+
+  useEffect(() => {
+    if (!callActive || !micStreamRef.current) return;
+    let cancelled = false;
+
+    async function refreshMicInput() {
+      try {
+        micStreamRef.current?.getTracks().forEach((track) => track.stop());
+        const stream = await getPreferredAudioStream();
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        micStreamRef.current = stream;
+        setMicMuted(false);
+        addLocalTracksToPeer();
+        log("Microphone input updated.");
+      } catch {
+        if (!cancelled) log("Could not update microphone input.");
+      }
+    }
+
+    void refreshMicInput();
+    return () => {
+      cancelled = true;
+    };
+  }, [audioInputDeviceId]);
 
   useEffect(() => {
     if (!localScreenVideoRef.current) return;
@@ -2468,8 +2827,16 @@ function App() {
   }, [callActive, micMuted]);
 
   useEffect(() => {
-    driveAudioMeter(remoteMediaActive ? remoteStreamRef.current : null, peerAudioContextRef, peerAudioFrameRef, setPeerAudioLevel);
+    driveAudioMeter(remoteMediaActive ? remoteAudioStreamRef.current : null, peerAudioContextRef, peerAudioFrameRef, setPeerAudioLevel);
     return () => stopAudioMeter(peerAudioContextRef, peerAudioFrameRef, setPeerAudioLevel);
+  }, [remoteMediaActive]);
+
+  useEffect(() => {
+    if (!remoteMediaActive) {
+      setRemoteAudioBlocked(false);
+      return;
+    }
+    void resumeRemoteAudio();
   }, [remoteMediaActive]);
 
   useEffect(() => {
@@ -2482,9 +2849,25 @@ function App() {
   }, [remoteVideoActive]);
 
   function refreshRemoteMediaState() {
-    const tracks = remoteStreamRef.current.getTracks();
-    setRemoteMediaActive(tracks.some((track) => track.readyState === "live"));
-    setRemoteVideoActive(remoteStreamRef.current.getVideoTracks().some((track) => track.readyState === "live"));
+    const audioTracks = remoteAudioStreamRef.current.getAudioTracks();
+    const videoTracks = remoteStreamRef.current.getVideoTracks();
+    setRemoteMediaActive([...audioTracks, ...videoTracks].some((track) => track.readyState === "live"));
+    setRemoteVideoActive(videoTracks.some((track) => track.readyState === "live"));
+  }
+
+  async function resumeRemoteAudio() {
+    const node = remoteAudioRef.current;
+    if (!node || !remoteMediaActive) return;
+    node.muted = false;
+    node.volume = 1;
+    try {
+      await node.play();
+      setRemoteAudioBlocked(false);
+      log("Remote audio playback resumed.");
+    } catch {
+      setRemoteAudioBlocked(true);
+      log("Remote audio is ready; browser still requires a click to play.");
+    }
   }
 
   function stopAudioMeter(
@@ -2518,6 +2901,7 @@ function App() {
     const analyser = context.createAnalyser();
     analyser.fftSize = 128;
     source.connect(analyser);
+    void context.resume().catch(() => undefined);
 
     const data = new Uint8Array(analyser.frequencyBinCount);
     const tick = () => {
@@ -2533,7 +2917,13 @@ function App() {
   }
 
   function log(event: string) {
-    setEvents((current) => [event, ...current].slice(0, 200));
+    setEvents((current) => [`${formatEventStamp()} ${event}`, ...current].slice(0, 200));
+  }
+
+  function formatEventStamp(date = new Date()) {
+    return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(
+      date.getSeconds(),
+    ).padStart(2, "0")}`;
   }
 
   function clearEventLog() {
@@ -2800,7 +3190,7 @@ function App() {
     const client = xmppClientRef.current;
     const room = xmppRoomRef.current?.trim();
     const space = xmppSpaceRef.current;
-    if (!client || xmppStatus !== "connected") return false;
+    if (!client || !xmppTransportReadyRef.current) return false;
 
     const payload = JSON.stringify(encrypted);
     if (payload.length > MAX_XMPP_PAYLOAD_CHARS) {
@@ -2814,6 +3204,7 @@ function App() {
           itemType: NS_JSON_0,
           json: encrypted,
         });
+        processedWireIdsRef.current.add(plain.id);
         return true;
       }
       if (!room) {
@@ -2825,6 +3216,7 @@ function App() {
         type: "groupchat",
         body: payload,
       });
+      processedWireIdsRef.current.add(plain.id);
       return true;
     } catch {
       log("Could not reach the XMPP room.");
@@ -2861,6 +3253,7 @@ function App() {
       birthday,
       recentEmojis,
       gifFavorites,
+      gifLibrary,
       avatarUrl,
       avatarFrameUrl,
       bannerUrl,
@@ -2888,7 +3281,8 @@ function App() {
       xmppRoomJid,
       xmppSpaceServiceJid,
       xmppSpaceNode,
-      xmppNick,
+      audioInputDeviceId,
+      audioOutputDeviceId,
     };
   }
 
@@ -2987,8 +3381,9 @@ function App() {
     setXmppRoomJid(settings.xmppRoomJid ?? "");
     setXmppSpaceServiceJid(settings.xmppSpaceServiceJid ?? "");
     setXmppSpaceNode(settings.xmppSpaceNode ?? "");
-    setXmppNick(settings.xmppNick ?? "");
-    log(`Loaded XMPP target: ${settings.xmppJid ?? "(no JID)"} via ${settings.xmppWebSocketUrl ?? "(no WebSocket URL)"}. Expected host/IP: doge-cube.local.`);
+    setAudioInputDeviceId(settings.audioInputDeviceId ?? "");
+    setAudioOutputDeviceId(settings.audioOutputDeviceId ?? "");
+    log(`Loaded XMPP target: ${settings.xmppJid ?? "(no JID)"} via ${settings.xmppWebSocketUrl ?? "(no WebSocket URL)"}.`);
     setXmppConnectionSettings(
       normalizeXmppConnectionSettings(
         {
@@ -2998,7 +3393,7 @@ function App() {
           roomJid: settings.xmppRoomJid ?? "",
           spaceServiceJid: settings.xmppSpaceServiceJid ?? "",
           spaceNode: settings.xmppSpaceNode ?? "",
-          nick: settings.xmppNick ?? "",
+          nick: "",
         },
         settings.name ?? DEFAULT_NAME,
       ),
@@ -3027,6 +3422,7 @@ function App() {
     setBirthday(settings.birthday ?? "");
     setRecentEmojis(settings.recentEmojis ?? defaultRecentEmojis);
     setGifFavorites(settings.gifFavorites ?? []);
+    setGifLibrary(settings.gifLibrary ?? []);
     setAvatarUrl(settings.avatarUrl ?? "");
     setAvatarFrameUrl(settings.avatarFrameUrl ?? "");
     setBannerUrl(settings.bannerUrl ?? "");
@@ -3043,7 +3439,7 @@ function App() {
     setChatPaneDrafts(normalizeChatPaneDrafts(settings.chatPaneDrafts, DEFAULT_CHAT_PANE_COUNT));
     setChatPaneReplyTargets(normalizeChatPaneReplyTargets(settings.chatPaneReplyTargets, DEFAULT_CHAT_PANE_COUNT));
     setChatPaneCompactSections(normalizeChatPaneCompactSections(settings.chatPaneCompactSections, DEFAULT_CHAT_PANE_COUNT));
-    setEvents(settings.events?.length ? settings.events.slice(0, 200) : ["Ready for XMPP federation."]);
+    setEvents(settings.events?.length ? settings.events.slice(0, 200) : [`${formatEventStamp()} Ready for XMPP federation.`]);
     setNewChannelName(settings.newChannelName ?? "");
     setNewServerName(settings.newServerName ?? "");
     setNewServerSubtitle(settings.newServerSubtitle ?? "");
@@ -3137,9 +3533,106 @@ function App() {
       track.stop();
       remoteStreamRef.current.removeTrack(track);
     });
+    remoteAudioStreamRef.current.getTracks().forEach((track) => {
+      track.stop();
+      remoteAudioStreamRef.current.removeTrack(track);
+    });
     setRemoteMediaActive(false);
     setRemoteVideoActive(false);
     setPeerCameraActive(false);
+    setRemoteAudioBlocked(false);
+    pendingRemoteCandidatesRef.current = [];
+  }
+
+  function getAudioInputConstraints() {
+    const deviceId = audioInputDeviceId.trim();
+    return deviceId ? { deviceId: { exact: deviceId } } : true;
+  }
+
+  async function getPreferredAudioStream() {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error("getUserMedia unavailable");
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio: getAudioInputConstraints() });
+    } catch (error) {
+      if (!audioInputDeviceId.trim()) throw error;
+      log("Selected microphone unavailable; falling back to default input.");
+      return await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
+  }
+
+  async function applyAudioOutputDevice() {
+    const node = remoteAudioRef.current as (HTMLAudioElement & { setSinkId?: (sinkId: string) => Promise<void> }) | null;
+    const sinkId = audioOutputDeviceId.trim();
+    if (!node || !sinkId || typeof node.setSinkId !== "function") return;
+    try {
+      await node.setSinkId(sinkId);
+    } catch {
+      log("Could not set the selected audio output device.");
+    }
+  }
+
+  async function pickAudioOutputDevice() {
+    const mediaDevices = navigator.mediaDevices as MediaDevices & {
+      selectAudioOutput?: () => Promise<MediaDeviceInfo>;
+    };
+    if (typeof mediaDevices.selectAudioOutput !== "function") {
+      log("This browser does not support choosing a playback device.");
+      return;
+    }
+    try {
+      const device = await mediaDevices.selectAudioOutput();
+      if (!device?.deviceId) return;
+      setAudioOutputDeviceId(device.deviceId);
+      await applyAudioOutputDevice();
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setAudioOutputDevices(devices.filter((candidate) => candidate.kind === "audiooutput"));
+    } catch {
+      log("Audio output device selection was cancelled or blocked.");
+    }
+  }
+
+  async function playPingSound() {
+    const AudioCtor = window.AudioContext ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtor) {
+      log("This browser does not support audio playback.");
+      return;
+    }
+
+    try {
+      const context = new AudioCtor();
+      if (context.state === "suspended") {
+        await context.resume();
+      }
+
+      const sinkId = audioOutputDeviceId.trim();
+      const contextWithSink = context as AudioContext & { setSinkId?: (sinkId: string) => Promise<void> };
+      if (sinkId && typeof contextWithSink.setSinkId === "function") {
+        await contextWithSink.setSinkId(sinkId);
+      }
+
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+
+      oscillator.type = "sine";
+      oscillator.frequency.value = 880;
+      gain.gain.value = 0.18;
+
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+
+      oscillator.start();
+      const stopAt = context.currentTime + 0.18;
+      oscillator.stop(stopAt);
+      oscillator.onended = () => {
+        void context.close();
+      };
+      window.setTimeout(() => {
+        void context.close();
+      }, 350);
+      log("Played audio test tone.");
+    } catch (error) {
+      log(`Could not play the audio test tone: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   function disconnectPeer() {
@@ -3147,7 +3640,17 @@ function App() {
     pcRef.current?.close();
     channelRef.current = null;
     pcRef.current = null;
+    micSenderRef.current = null;
     renegotiatingRef.current = false;
+    mediaNegotiationQueuedRef.current = false;
+    xmppTransportReadyRef.current = false;
+    roomOffererRef.current = null;
+    roomRoleLockedRef.current = false;
+    rtcSessionIdRef.current = null;
+    if (mediaNegotiationTimerRef.current !== null) {
+      window.clearTimeout(mediaNegotiationTimerRef.current);
+      mediaNegotiationTimerRef.current = null;
+    }
     attachmentTransfersRef.current.clear();
     stopLocalMedia();
     clearRemoteMedia();
@@ -3189,12 +3692,13 @@ function App() {
     }> = {},
   ) {
     const nextName = (profile.name ?? name) || "Anonymous";
-    await sendEncryptedPayload({
+    const baseProfile: PlainWireProfileSync = {
       type: "profile-sync",
       id: crypto.randomUUID(),
       author: nextName,
       channel: activeChannel,
       at: Date.now(),
+      connectionId,
       name: nextName,
       presence: profile.presence ?? presence,
       notificationsMuted: profile.notificationsMuted ?? notificationsMuted,
@@ -3220,7 +3724,53 @@ function App() {
       headline: profile.headline ?? headline,
       timezone: profile.timezone ?? timezone,
       birthday: profile.birthday ?? birthday,
+    };
+
+    const liveProfiles: PlainWireProfileSync[] = [baseProfile];
+    if (baseProfile.avatarUrl || baseProfile.avatarFrameUrl || baseProfile.bannerUrl) {
+      liveProfiles.push({
+        ...baseProfile,
+        avatarUrl: "",
+        avatarFrameUrl: "",
+        bannerUrl: "",
+      });
+    }
+    liveProfiles.push({
+      ...baseProfile,
+      avatarUrl: "",
+      avatarFrameUrl: "",
+      bannerUrl: "",
+      about: "",
+      pronunciation: "",
+      hobbies: "",
+      languages: "",
+      company: "",
+      school: "",
+      major: "",
+      statusMessage: "",
+      website: "",
+      location: "",
+      headline: "",
+      timezone: "",
+      birthday: "",
     });
+
+    const key = await deriveKey(passphrase);
+    for (const candidate of liveProfiles) {
+      const encrypted = await encryptPayload(key, candidate);
+      const payload = JSON.stringify(encrypted);
+      if (payload.length > MAX_XMPP_PAYLOAD_CHARS) continue;
+      if (candidate !== baseProfile) {
+        log("Profile synced live without inline avatar fields because the XMPP payload was too large.");
+      }
+      if (await sendXmppEncryptedPayload(encrypted, candidate)) return;
+    }
+
+    const fallbackProfile = liveProfiles[liveProfiles.length - 1];
+    if (fallbackProfile !== baseProfile) {
+      log("Profile saved locally or queued for peer delivery without inline avatar fields because the live XMPP payload was too large.");
+    }
+    await sendEncryptedPayload(fallbackProfile);
   }
 
   async function waitForIceGatheringComplete(pc: RTCPeerConnection) {
@@ -3274,20 +3824,25 @@ function App() {
       micStreamRef.current = null;
       setCallActive(false);
       setMicMuted(false);
+      setRemoteAudioBlocked(false);
+      rtcSessionIdRef.current = null;
       addSystemMessage("Ended the local voice session.");
       void sendMediaSync({ callActive: false, screenSharing, micMuted: false, cameraActive });
-      await negotiateMedia();
       return;
     }
 
     try {
-      micStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = await getPreferredAudioStream();
       setCallActive(true);
       setMicMuted(false);
-      addLocalTracksToPeer();
+      if (roomOffererRef.current) {
+        rtcSessionIdRef.current = crypto.randomUUID();
+        if (!isUsablePeerConnection(pcRef.current)) makePeer(true);
+        addLocalTracksToPeer();
+        requestMediaNegotiation();
+      }
       addSystemMessage("Started a local voice session with microphone capture.");
       void sendMediaSync({ callActive: true, screenSharing, micMuted: false, cameraActive });
-      await negotiateMedia();
     } catch {
       log("Microphone permission denied or unavailable.");
     }
@@ -3300,7 +3855,6 @@ function App() {
       setCameraActive(false);
       addSystemMessage("Camera stopped locally.");
       void sendMediaSync({ callActive, screenSharing, micMuted, cameraActive: false });
-      await negotiateMedia();
       return;
     }
 
@@ -3309,14 +3863,13 @@ function App() {
       cameraStreamRef.current.getVideoTracks()[0]?.addEventListener("ended", () => {
         setCameraActive(false);
         cameraStreamRef.current = null;
-        void negotiateMedia();
         log("Camera ended by browser.");
       });
       setCameraActive(true);
+      if (!pcRef.current) makePeer(shouldInitiatePeer());
       addLocalTracksToPeer();
       addSystemMessage("Camera capture started locally.");
       void sendMediaSync({ callActive, screenSharing, micMuted, cameraActive: true });
-      await negotiateMedia();
     } catch {
       log("Camera permission denied or unavailable.");
     }
@@ -3329,7 +3882,6 @@ function App() {
       setScreenSharing(false);
       addSystemMessage("Screen share stopped.");
       void sendMediaSync({ callActive, screenSharing: false, micMuted, cameraActive });
-      await negotiateMedia();
       return;
     }
 
@@ -3338,14 +3890,13 @@ function App() {
       screenStreamRef.current.getVideoTracks()[0]?.addEventListener("ended", () => {
         setScreenSharing(false);
         screenStreamRef.current = null;
-        void negotiateMedia();
         log("Screen share ended by browser.");
       });
       setScreenSharing(true);
+      if (!pcRef.current) makePeer(shouldInitiatePeer());
       addLocalTracksToPeer();
       addSystemMessage("Screen share capture started locally.");
       void sendMediaSync({ callActive, screenSharing: true, micMuted, cameraActive });
-      await negotiateMedia();
     } catch {
       log("Screen share permission denied or unavailable.");
     }
@@ -3466,18 +4017,23 @@ function App() {
   }
 
   function deriveXmppAccountDomain() {
+    const jidDomain = xmppJid.trim().split("@", 2)[1] ?? "";
+    if (jidDomain) return jidDomain;
+
     const roomDomain = xmppRoomJid.trim().split("@", 2)[1] ?? "";
-    if (roomDomain) return roomDomain;
+    if (roomDomain && !roomDomain.startsWith("conference.")) return roomDomain;
 
     const spaceDomain = xmppSpaceServiceJid.trim().split("@", 2)[1] ?? "";
-    if (spaceDomain) return spaceDomain;
+    if (spaceDomain && !spaceDomain.startsWith("pubsub.")) return spaceDomain;
 
     try {
       const host = new URL(xmppWebSocketUrl.trim()).hostname.trim();
       if (host.startsWith("xmpp.")) return host.slice("xmpp.".length);
-      return host || "doge-cube.local";
+      if (host.startsWith("conference.")) return host.slice("conference.".length);
+      if (host.startsWith("pubsub.")) return host.slice("pubsub.".length);
+      return host || "chaff.site";
     } catch {
-      return "doge-cube.local";
+      return "chaff.site";
     }
   }
 
@@ -3494,6 +4050,11 @@ function App() {
     const username = xmppAccountUsername.trim().replace(/^@+/, "");
     const domain = xmppAccountDomain.trim().replace(/^@+/, "");
     const password = xmppAccountPassword;
+    const websocketUrl = xmppConnectionSettings.websocketUrl || xmppWebSocketUrl.trim();
+    if (!websocketUrl) {
+      log("Fill the XMPP WebSocket URL first.");
+      return;
+    }
     if (!username || !domain || !password) {
       log("Fill the account username, domain, and password first.");
       return;
@@ -3502,13 +4063,13 @@ function App() {
     const jid = username.includes("@") ? username : `${username}@${domain}`;
     const nextXmppConnectionSettings = normalizeXmppConnectionSettings(
       {
-        websocketUrl: xmppConnectionSettings.websocketUrl || xmppWebSocketUrl.trim() || deriveXmppWebSocketUrl(domain),
+        websocketUrl,
         jid,
         password,
         roomJid: xmppConnectionSettings.roomJid || xmppRoomJid.trim(),
         spaceServiceJid: xmppConnectionSettings.spaceServiceJid || xmppSpaceServiceJid.trim(),
         spaceNode: xmppConnectionSettings.spaceNode || xmppSpaceNode.trim(),
-        nick: xmppNick,
+        nick: localMemberName,
       },
       name,
     );
@@ -3520,6 +4081,7 @@ function App() {
     setXmppSpaceServiceJid(nextXmppConnectionSettings.spaceServiceJid);
     setXmppSpaceNode(nextXmppConnectionSettings.spaceNode);
     setXmppConnectionSettings(nextXmppConnectionSettings);
+    xmppCreateAccountRequestedRef.current = true;
     setModal(null);
     log(`Prepared XMPP account ${jid}.`);
     setXmppConnectNonce((current) => current + 1);
@@ -3765,8 +4327,9 @@ function App() {
     setChannelCreateKind("text");
     setNewSubchannelName("");
     setXmppAccountUsername("");
-    setXmppAccountDomain("doge-cube.local");
+    setXmppAccountDomain("chaff.site");
     setXmppAccountPassword("");
+    xmppCreateAccountRequestedRef.current = false;
   }
 
   function saveEditedMessage() {
@@ -4275,6 +4838,8 @@ function App() {
       const room = xmppRoomJid.trim();
       const spaceServiceJid = xmppSpaceServiceJid.trim();
       const spaceNode = xmppSpaceNode.trim();
+      const nextAudioInputDeviceId = audioInputDeviceId.trim();
+      const nextAudioOutputDeviceId = audioOutputDeviceId.trim();
       const nextXmppConnectionSettings = normalizeXmppConnectionSettings(
         {
           websocketUrl,
@@ -4283,7 +4848,7 @@ function App() {
           roomJid: room,
           spaceServiceJid,
           spaceNode,
-          nick: xmppNick,
+          nick: localMemberName,
         },
         name,
       );
@@ -4303,6 +4868,8 @@ function App() {
       if (hasSpace && (!spaceServiceJid || !spaceNode)) {
         throw new Error("Fill both the space service JID and node, or clear both.");
       }
+      setAudioInputDeviceId(nextAudioInputDeviceId);
+      setAudioOutputDeviceId(nextAudioOutputDeviceId);
       setXmppConnectionSettings(nextXmppConnectionSettings);
       setModal(null);
       log("Settings saved.");
@@ -4315,6 +4882,10 @@ function App() {
   }
 
   function connectXmpp() {
+    if (!xmppWebSocketUrl.trim()) {
+      log("Fill the XMPP WebSocket URL first.");
+      return;
+    }
     if (!xmppJid.trim() || !xmppPassword.trim()) {
       openXmppAccountModal();
       log("Create an XMPP account to connect, then try again.");
@@ -4343,10 +4914,12 @@ function App() {
     setXmppRoomJid("");
     setXmppSpaceServiceJid("");
     setXmppSpaceNode("");
-    setXmppNick("");
+    setAudioInputDeviceId("");
+    setAudioOutputDeviceId("");
     setXmppAccountUsername("");
-    setXmppAccountDomain("doge-cube.local");
+    setXmppAccountDomain("chaff.site");
     setXmppAccountPassword("");
+    xmppCreateAccountRequestedRef.current = false;
     setXmppConnectionSettings(
       normalizeXmppConnectionSettings(
         {
@@ -4397,7 +4970,8 @@ function App() {
     setRoomPeerFingerprint("");
     setUnreadByChannel({});
     setGifFavorites([]);
-    setEvents(["Ready for XMPP federation."]);
+    setGifLibrary([]);
+    setEvents([`${formatEventStamp()} Ready for XMPP federation.`]);
     setGifTab("all");
     setGifQuery("");
     setPendingGif(null);
@@ -4565,6 +5139,10 @@ function App() {
       }
 
       if (plain.type === "profile-sync") {
+        if (plain.connectionId && plain.connectionId === connectionId) {
+          return;
+        }
+        if (plain.connectionId) setPeerConnectionId(plain.connectionId);
         setPeerName(plain.name);
         setPeerPresence(plain.presence);
         setPeerAbout(plain.about ?? "");
@@ -4628,6 +5206,9 @@ function App() {
       }
 
       if (plain.type === "rtc-signal") {
+        if (plain.originConnectionId && plain.originConnectionId === connectionId) {
+          return;
+        }
         await handleRtcSignal(plain);
         return;
       }
@@ -4653,9 +5234,13 @@ function App() {
               ? {
                   ...makeAttachment(plain.fileName, plain.mimeType, plain.size, plain.data),
                 }
-              : undefined,
+            : undefined,
         }),
       );
+      const mentionedMembers = extractMentionedMemberNames(plain.type === "attachment" ? "" : plain.body, memberRoster);
+      if (mentionedMembers.includes(localMemberName)) {
+        log(`${plain.author} mentioned you.`);
+      }
       if (plain.channel !== activeChannel || document.visibilityState === "hidden") {
         setUnreadByChannel((current) => incrementUnreadCount(current, plain.channel));
       }
@@ -4674,37 +5259,85 @@ function App() {
   function addLocalTracksToPeer() {
     const pc = pcRef.current;
     if (!pc) return;
-    const activeTracks = [micStreamRef.current, cameraStreamRef.current, screenStreamRef.current].flatMap(
-      (stream) => stream?.getTracks() ?? [],
-    );
-    const activeTrackIds = new Set(activeTracks.map((track) => track.id));
+    const audioTrack = micStreamRef.current?.getAudioTracks()[0] ?? null;
+    const liveMicSender = micSenderRef.current && pc.getSenders().includes(micSenderRef.current) ? micSenderRef.current : null;
+    if (!liveMicSender) micSenderRef.current = null;
+    if (audioTrack) {
+      const sender = liveMicSender ?? pc.getSenders().find((candidate) => candidate.track?.kind === "audio") ?? null;
+      if (sender) {
+        micSenderRef.current = sender;
+        if (sender.track?.id !== audioTrack.id) void sender.replaceTrack(audioTrack);
+      } else if (micStreamRef.current) {
+        micSenderRef.current = pc.addTrack(audioTrack, micStreamRef.current);
+      }
+    } else if (liveMicSender?.track?.kind === "audio") {
+      void liveMicSender.replaceTrack(null);
+    }
 
+    const activeVideoTracks = [cameraStreamRef.current, screenStreamRef.current].flatMap((stream) => stream?.getVideoTracks() ?? []);
+    const activeVideoTrackIds = new Set(activeVideoTracks.map((track) => track.id));
     pc.getSenders().forEach((sender) => {
-      if (sender.track && !activeTrackIds.has(sender.track.id)) pc.removeTrack(sender);
+      if (sender.track?.kind === "video" && sender.track && !activeVideoTrackIds.has(sender.track.id)) pc.removeTrack(sender);
     });
 
-    const existingTrackIds = new Set(pc.getSenders().map((sender) => sender.track?.id).filter(Boolean));
-
-    activeTracks.forEach((track) => {
+    const existingVideoTrackIds = new Set(pc.getSenders().map((sender) => sender.track?.id).filter(Boolean));
+    activeVideoTracks.forEach((track) => {
       const stream =
-        track.kind === "audio"
-          ? micStreamRef.current
-          : cameraStreamRef.current?.getVideoTracks().some((videoTrack) => videoTrack.id === track.id)
-            ? cameraStreamRef.current
-            : screenStreamRef.current;
-      if (stream && !existingTrackIds.has(track.id)) pc.addTrack(track, stream);
+        cameraStreamRef.current?.getVideoTracks().some((videoTrack) => videoTrack.id === track.id)
+          ? cameraStreamRef.current
+          : screenStreamRef.current;
+      if (stream && !existingVideoTrackIds.has(track.id)) pc.addTrack(track, stream);
     });
   }
 
-  async function sendRtcSignal(description: RTCSessionDescriptionInit) {
-    await sendEncryptedPayload({
+  async function sendRtcSignal(signal: RtcSignalPayload) {
+    const hasLiveTransport = xmppTransportReadyRef.current;
+    if (!hasLiveTransport) {
+      pendingRtcSignalsRef.current.push(signal);
+      log("Queued RTC signal until XMPP room or peer channel is ready.");
+      return false;
+    }
+
+    return await sendXmppRtcSignal(signal);
+  }
+
+  async function sendXmppRtcSignal(signal: RtcSignalPayload) {
+    const client = xmppClientRef.current;
+    const room = xmppRoomRef.current?.trim();
+    const space = xmppSpaceRef.current;
+    if (!client || (!room && !space)) return false;
+
+    const plain: PlainWireSignal = {
       type: "rtc-signal",
       id: crypto.randomUUID(),
       author: name || "Anonymous",
       channel: activeChannel,
       at: Date.now(),
-      description,
-    });
+      originConnectionId: connectionId,
+      rtcSessionId: rtcSessionIdRef.current ?? undefined,
+      ...signal,
+    }
+    const key = await deriveKey(passphrase);
+    const encrypted = await encryptPayload(key, plain);
+    return await sendXmppEncryptedPayload(encrypted, plain);
+  }
+
+  async function flushRtcSignals() {
+    if (flushingRtcSignalsRef.current || pendingRtcSignalsRef.current.length === 0) return;
+    const hasLiveTransport = xmppTransportReadyRef.current || channelRef.current?.readyState === "open";
+    if (!hasLiveTransport) return;
+
+    flushingRtcSignalsRef.current = true;
+    try {
+      while (pendingRtcSignalsRef.current.length) {
+        const signal = pendingRtcSignalsRef.current[0];
+        const sent = await sendXmppRtcSignal(signal);
+        if (!sent) break;
+        pendingRtcSignalsRef.current.shift();
+      }
+    } finally {
+      flushingRtcSignalsRef.current = false;
+    }
   }
 
   async function sendReceipt(receivedId: string, channel: string) {
@@ -4907,41 +5540,118 @@ function App() {
     }
   }
 
+  function queueMediaNegotiation() {
+    mediaNegotiationQueuedRef.current = true;
+    if (mediaNegotiationTimerRef.current !== null || renegotiatingRef.current) return;
+    mediaNegotiationTimerRef.current = window.setTimeout(() => {
+      mediaNegotiationTimerRef.current = null;
+      void negotiateMedia();
+    }, 0);
+  }
+
+  function requestMediaNegotiation() {
+    if (roomOffererRef.current === null) {
+      mediaNegotiationQueuedRef.current = true;
+      log("Queued media update until the RTC role is known.");
+      return;
+    }
+    if (!roomOffererRef.current) {
+      log("Queued media update for the peer to renegotiate.");
+      return;
+    }
+    queueMediaNegotiation();
+  }
+
   async function negotiateMedia() {
     const pc = pcRef.current;
-    if (!pc || channelRef.current?.readyState !== "open" || renegotiatingRef.current) return;
+    if (!pc) return;
+    if (!roomOffererRef.current) return;
+    mediaNegotiationQueuedRef.current = true;
+    if (renegotiatingRef.current) return;
+    mediaNegotiationQueuedRef.current = false;
 
     try {
       renegotiatingRef.current = true;
+      makingOfferRef.current = true;
       addLocalTracksToPeer();
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      if (pc.localDescription) await sendRtcSignal(pc.localDescription);
+      if (pc.localDescription) await sendRtcSignal({ description: pc.localDescription });
       log("Sent encrypted media renegotiation offer.");
     } catch {
       log("Could not negotiate media tracks.");
     } finally {
+      makingOfferRef.current = false;
       renegotiatingRef.current = false;
+      if (mediaNegotiationQueuedRef.current && mediaNegotiationTimerRef.current === null) {
+        mediaNegotiationTimerRef.current = window.setTimeout(() => {
+          mediaNegotiationTimerRef.current = null;
+          void negotiateMedia();
+        }, 75);
+      }
     }
   }
 
   async function handleRtcSignal(signal: PlainWireSignal) {
-    const pc = pcRef.current;
+    const signalSessionId = signal.rtcSessionId ?? null;
+    const activeSessionId = rtcSessionIdRef.current;
+    if (activeSessionId && signalSessionId && signalSessionId !== activeSessionId) {
+      if (!signal.description || signal.description.type !== "offer") return;
+      rtcSessionIdRef.current = signalSessionId;
+      pendingRemoteCandidatesRef.current = [];
+      pcRef.current?.close();
+      pcRef.current = null;
+    } else if (!activeSessionId && signalSessionId) {
+      rtcSessionIdRef.current = signalSessionId;
+    }
+
+    const pc = isUsablePeerConnection(pcRef.current) ? pcRef.current! : makePeer(false);
     if (!pc) return;
 
     try {
+      if (signal.candidate) {
+        if (rtcSessionIdRef.current && signalSessionId && signalSessionId !== rtcSessionIdRef.current) return;
+        if (pc.remoteDescription) {
+          await pc.addIceCandidate(signal.candidate);
+        } else {
+          pendingRemoteCandidatesRef.current.push({ rtcSessionId: signalSessionId, candidate: signal.candidate });
+        }
+        return;
+      }
+
+      if (!signal.description) return;
+
       if (signal.description.type === "offer") {
+        const offerCollision = makingOfferRef.current || pc.signalingState !== "stable";
+        if (offerCollision && !peerPoliteRef.current) {
+          log("Ignoring colliding media offer.");
+          return;
+        }
+        if (offerCollision) {
+          await pc.setLocalDescription({ type: "rollback" });
+        }
         addLocalTracksToPeer();
         await pc.setRemoteDescription(signal.description);
+        for (const item of pendingRemoteCandidatesRef.current) {
+          if (item.rtcSessionId && rtcSessionIdRef.current && item.rtcSessionId !== rtcSessionIdRef.current) continue;
+          await pc.addIceCandidate(item.candidate);
+        }
+        pendingRemoteCandidatesRef.current = [];
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        if (pc.localDescription) await sendRtcSignal(pc.localDescription);
+        if (pc.localDescription) await sendRtcSignal({ description: pc.localDescription });
         log("Answered encrypted media renegotiation offer.");
         return;
       }
 
       if (signal.description.type === "answer") {
+        if (rtcSessionIdRef.current && signalSessionId && signalSessionId !== rtcSessionIdRef.current) return;
         await pc.setRemoteDescription(signal.description);
+        for (const item of pendingRemoteCandidatesRef.current) {
+          if (item.rtcSessionId && rtcSessionIdRef.current && item.rtcSessionId !== rtcSessionIdRef.current) continue;
+          await pc.addIceCandidate(item.candidate);
+        }
+        pendingRemoteCandidatesRef.current = [];
         log("Accepted encrypted media renegotiation answer.");
       }
     } catch {
@@ -5069,7 +5779,7 @@ function App() {
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await getPreferredAudioStream();
       const mimeType = chooseVoiceMimeType();
       const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
 
@@ -5182,11 +5892,45 @@ function App() {
     void sendReceipt(attachment.id, attachment.channel);
   }
 
-  function makePeer() {
+  function shouldInitiatePeer() {
+    const localNick = xmppSelfNick.trim().toLowerCase();
+    const remoteNick = Object.values(xmppRoomOccupants)
+      .find((occupant) => !occupant.self && occupant.nick.trim())
+      ?.nick.trim()
+      .toLowerCase();
+    if (localNick && remoteNick) {
+      return localNick.localeCompare(remoteNick, undefined, { sensitivity: "base" }) < 0;
+    }
+
+    if (!peerConnectionId.trim()) return false;
+    const local = connectionId.trim();
+    const peer = peerConnectionId.trim();
+    return local.localeCompare(peer, undefined, { sensitivity: "base" }) < 0;
+  }
+
+  useEffect(() => {
+    if (roomRoleLockedRef.current) return;
+    const remoteRoomNick = Object.values(xmppRoomOccupants).find((occupant) => !occupant.self && occupant.nick.trim());
+    if (!xmppSelfNick.trim() || (!remoteRoomNick && !peerConnectionId.trim())) return;
+    const offerer = shouldInitiatePeer();
+    roomOffererRef.current = offerer;
+    peerPoliteRef.current = !offerer;
+    roomRoleLockedRef.current = true;
+    log(`RTC role locked: ${offerer ? "offerer" : "answerer"}.`);
+    if (offerer && mediaNegotiationQueuedRef.current) queueMediaNegotiation();
+  }, [connectionId, peerConnectionId, xmppRoomOccupants, xmppSelfNick]);
+
+  function makePeer(createDataChannel = false) {
     pcRef.current?.close();
+    micSenderRef.current = null;
+    pendingRemoteCandidatesRef.current = [];
     const pc = new RTCPeerConnection({
       iceServers: getIceServers(),
     });
+
+    if (createDataChannel && roomOffererRef.current !== false) {
+      wireChannel(pc.createDataChannel("chaff"));
+    }
 
     pc.onconnectionstatechange = () => {
       log(`Connection state: ${pc.connectionState}`);
@@ -5199,6 +5943,7 @@ function App() {
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         log(`ICE candidate: ${event.candidate.candidate}`);
+        void sendRtcSignal({ candidate: event.candidate.toJSON() });
         return;
       }
       if (!pc.localDescription) return;
@@ -5218,20 +5963,24 @@ function App() {
       log(`ICE candidate error: ${event.errorCode} ${event.errorText}`);
     };
     pc.ondatachannel = (event) => wireChannel(event.channel);
+    pc.onnegotiationneeded = null;
     pc.ontrack = (event) => {
-      event.streams[0]?.getTracks().forEach((track) => {
-        if (!remoteStreamRef.current.getTracks().some((existing) => existing.id === track.id)) {
-          remoteStreamRef.current.addTrack(track);
+      const inboundTracks = event.streams[0]?.getTracks().length ? event.streams[0].getTracks() : [event.track];
+      inboundTracks.forEach((track) => {
+        const targetStream = track.kind === "audio" ? remoteAudioStreamRef.current : remoteStreamRef.current;
+        if (!targetStream.getTracks().some((existing) => existing.id === track.id)) {
+          targetStream.addTrack(track);
           track.addEventListener("ended", () => {
-            remoteStreamRef.current.removeTrack(track);
+            targetStream.removeTrack(track);
             refreshRemoteMediaState();
-            log("Remote media track ended.");
+            log(`Remote ${track.kind} track ended.`);
           });
         }
       });
-      if (remoteAudioRef.current) remoteAudioRef.current.srcObject = remoteStreamRef.current;
+      if (remoteAudioRef.current) remoteAudioRef.current.srcObject = remoteAudioStreamRef.current;
       if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStreamRef.current;
-      void remoteAudioRef.current?.play().catch(() => log("Remote audio is ready; browser requires a click to play."));
+      void applyAudioOutputDevice();
+      void resumeRemoteAudio();
       void remoteVideoRef.current?.play().catch(() => log("Remote video is ready; browser requires a click to play."));
       refreshRemoteMediaState();
       log("Receiving remote media track.");
@@ -5241,11 +5990,17 @@ function App() {
     return pc;
   }
 
+  function isUsablePeerConnection(pc: RTCPeerConnection | null) {
+    if (!pc) return false;
+    return !["closed", "disconnected", "failed"].includes(pc.connectionState);
+  }
+
   function wireChannel(channel: RTCDataChannel) {
     channelRef.current = channel;
     channel.onopen = () => {
       setStatus("connected");
       log("Encrypted P2P channel open.");
+      void flushRtcSignals();
     };
     channel.onclose = () => {
       setStatus("closed");
@@ -5405,6 +6160,31 @@ function App() {
     });
   }
 
+  function isGifAssetUrl(url: string) {
+    return /\.(gif|gifv)(?:$|[?#])/i.test(url.trim());
+  }
+
+  function isGifVideoUrl(url: string) {
+    return /\.(mp4|webm|mov)(?:$|[?#])/i.test(url.trim());
+  }
+
+  function renderGifPickerMedia(gif: { url: string; label: string }) {
+    const mediaUrl = canonicalGifUrl(gif.url);
+    const previewUrl = isLocalMediaUrl(window.location.origin, mediaUrl)
+      ? mediaUrl
+      : buildTweetMediaProxyUrl(window.location.origin, { src: mediaUrl });
+
+    if (isGifVideoUrl(mediaUrl)) {
+      return (
+        <video autoPlay muted loop playsInline preload="metadata" aria-label={gif.label}>
+          <source src={previewUrl} />
+        </video>
+      );
+    }
+
+    return <img src={previewUrl} alt={gif.label} loading="lazy" />;
+  }
+
   function renderBodyText(text: string, keyPrefix: string) {
     const markers = [
       { delimiter: "`", kind: "code" as const },
@@ -5449,6 +6229,33 @@ function App() {
       });
     }
 
+    function renderMentions(value: string, innerPrefix: string) {
+      return splitTextWithMentions(value, memberRoster).map((token, index) => {
+        const tokenKey = `${innerPrefix}-${index}`;
+        if (token.type === "mention") {
+          return (
+            <button
+              key={tokenKey}
+              type="button"
+              className="messageMention"
+              onClick={() => openMemberProfile(token.memberName)}
+              aria-label={`Open profile for ${token.memberName}`}
+            >
+              {token.value}
+            </button>
+          );
+        }
+        if (token.type === "link") {
+          return (
+            <a key={tokenKey} href={token.href} target="_blank" rel="noreferrer">
+              {token.label}
+            </a>
+          );
+        }
+        return token.value;
+      });
+    }
+
     function renderTextParagraphs(value: string, paragraphPrefix: string) {
       return value
         .split(/\n{2,}/)
@@ -5456,37 +6263,43 @@ function App() {
         .map((paragraph, paragraphIndex) => {
           const lines = paragraph.split("\n");
           const isQuote = lines.every((line) => line.trimStart().startsWith(">"));
-          const body = lines.flatMap((line, lineIndex) => {
+          const body: React.ReactNode[] = [];
+          lines.forEach((line, lineIndex) => {
             const content = isQuote ? line.replace(/^\s*>\s?/, "") : line;
-            return [
-              ...(lineIndex > 0 ? [<br key={`${paragraphPrefix}-br-${paragraphIndex}-${lineIndex}`} />] : []),
-              ...splitMessageText(content).flatMap((token, tokenIndex) =>
-                token.type === "text" ? (
-                  renderInlineMarkdown(token.value, `${paragraphPrefix}-t-${paragraphIndex}-${lineIndex}-${tokenIndex}`)
-                ) : (
-                  (() => {
-                    const normalizedInstagramHref = normalizeInstagramUrl(token.href);
-                    const normalizedTenorHref = normalizeTenorUrl(token.href);
-                    const normalizedHref = normalizedInstagramHref ?? normalizedTenorHref ?? rewriteTweetUrlToFxTwitter(token.href);
-                    const normalizedLabel =
-                      normalizeInstagramUrl(token.label) ??
-                      normalizeTenorUrl(token.label) ??
-                      rewriteTweetUrlToFxTwitter(token.label);
+            if (lineIndex > 0) {
+              body.push(<br key={`${paragraphPrefix}-br-${paragraphIndex}-${lineIndex}`} />);
+            }
 
-                    return [
-                      <a
-                        key={`${paragraphPrefix}-a-${paragraphIndex}-${lineIndex}-${tokenIndex}-${token.href}`}
-                        href={normalizedHref}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {normalizedLabel}
-                      </a>,
-                    ];
-                  })()
-                ),
-              ),
-            ];
+            splitMessageText(content).forEach((token, tokenIndex) => {
+              if (token.type === "text") {
+                const rendered = renderInlineMarkdown(token.value, `${paragraphPrefix}-t-${paragraphIndex}-${lineIndex}-${tokenIndex}`);
+                rendered.forEach((node, nodeIndex) => {
+                  if (typeof node === "string") {
+                    body.push(...renderMentions(node, `${paragraphPrefix}-m-${paragraphIndex}-${lineIndex}-${tokenIndex}-${nodeIndex}`));
+                    return;
+                  }
+                  body.push(node);
+                });
+                return;
+              }
+
+              const normalizedInstagramHref = normalizeInstagramUrl(token.href);
+              const normalizedTenorHref = normalizeTenorUrl(token.href);
+              const normalizedHref = normalizedInstagramHref ?? normalizedTenorHref ?? rewriteTweetUrlToFxTwitter(token.href);
+              const normalizedLabel =
+                normalizeInstagramUrl(token.label) ?? normalizeTenorUrl(token.label) ?? rewriteTweetUrlToFxTwitter(token.label);
+
+              body.push(
+                <a
+                  key={`${paragraphPrefix}-a-${paragraphIndex}-${lineIndex}-${tokenIndex}-${token.href}`}
+                  href={normalizedHref}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {normalizedLabel}
+                </a>,
+              );
+            });
           });
 
           return isQuote ? (
@@ -5533,11 +6346,15 @@ function App() {
       nodes.push(...renderTextParagraphs(text.slice(lastIndex), `${keyPrefix}-text-${lastIndex}`));
     }
 
-    return nodes;
-  }
+      return nodes;
+    }
 
   function renderMessageContent(message: ChatMessage, keyPrefix: string, mediaBaseUrl: string) {
+    const iframeEmbeds = extractIframeEmbeds(message.body);
+    const bodyWithoutIframes = stripIframeEmbeds(message.body).trim();
     const imageUrls = extractImageUrls(message.body);
+    const gifImageUrls = imageUrls.filter(isGifAssetUrl);
+    const nonGifImageUrls = imageUrls.filter((url) => !isGifAssetUrl(url));
     const videoUrls = extractVideoUrls(message.body);
     const audioUrls = extractAudioUrls(message.body);
     const youtubeUrls = extractYouTubeUrls(message.body);
@@ -5552,12 +6369,13 @@ function App() {
         youtubeUrls.length > 0 ||
         instagramUrls.length > 0 ||
         tenorUrls.length > 0 ||
-        tweetUrls.length > 0);
+        tweetUrls.length > 0 ||
+        iframeEmbeds.length > 0);
 
     return (
       <>
-        {message.body && !mediaOnly && <>{renderBodyText(message.body, keyPrefix)}</>}
-        {imageUrls.map((url) => (
+        {bodyWithoutIframes && !mediaOnly && <>{renderBodyText(bodyWithoutIframes, keyPrefix)}</>}
+        {nonGifImageUrls.map((url) => (
           <a
             className="imageEmbed"
             key={url}
@@ -5575,15 +6393,59 @@ function App() {
             <img src={isLocalMediaUrl(mediaBaseUrl, url) ? url : buildTweetMediaProxyUrl(mediaBaseUrl, { src: url })} alt={url} />
           </a>
         ))}
-        {videoUrls.map((url) =>
-          renderVideoEmbed({
+        {gifImageUrls.map((url) => {
+          const imageUrl = isLocalMediaUrl(mediaBaseUrl, url) ? url : buildTweetMediaProxyUrl(mediaBaseUrl, { src: url });
+          const gifLabel = url.split("/").pop()?.replace(/\.(gifv?|webp)(?:$|[?#]).*/i, "") || "GIF";
+          const existingGif = findGifByUrl(url);
+          const favorited = Boolean(existingGif && gifFavorites.includes(existingGif.id));
+          return (
+            <GifMessageCard
+              key={url}
+              href={imageUrl}
+              label={gifLabel}
+              media={{ kind: "image", src: imageUrl, alt: url }}
+              favorited={favorited}
+              favoriteAriaLabel={favorited ? `Remove ${gifLabel} from favorites` : `Add ${gifLabel} to favorites`}
+              onMediaClick={() =>
+                setLightboxImage({
+                  url: imageUrl,
+                  alt: url,
+                })
+              }
+              onFavorite={() => favoriteGifFromUrl(url, gifLabel, "Message GIF")}
+            />
+          );
+        })}
+        {videoUrls.map((url) => {
+          const existingGif = findGifByUrl(url);
+          const favorited = Boolean(existingGif && gifFavorites.includes(existingGif.id));
+          const videoLabel =
+            existingGif?.label ?? url.split("/").pop()?.replace(/\.(mp4|webm|mov)(?:$|[?#]).*/i, "") ?? "GIF";
+
+          if (existingGif?.source === "Tenor") {
+            return (
+              <GifMessageCard
+                key={url}
+                href={url}
+                label={videoLabel}
+                media={{ kind: "video", src: url }}
+                favorited={favorited}
+                favoriteAriaLabel={favorited ? `Remove ${videoLabel} from favorites` : `Add ${videoLabel} to favorites`}
+                onFavorite={() => favoriteGifFromUrl(url, videoLabel, "Message GIF")}
+                mediaClassName="tenorEmbed"
+                mediaLinkClassName="videoEmbed tenorVideoEmbed"
+              />
+            );
+          }
+
+          return renderVideoEmbed({
             baseUrl: mediaBaseUrl,
             key: url,
             href: url,
             url,
             className: "videoEmbed",
-          }),
-        )}
+          });
+        })}
         {audioUrls.map((url) => (
           <a className="audioEmbed" key={url} href={url} target="_blank" rel="noreferrer">
             <audio controls preload="metadata">
@@ -5610,70 +6472,152 @@ function App() {
         {instagramUrls.map((url) => (
           <InstagramEmbed key={url} url={url} />
         ))}
-        {tenorUrls.map((url) => (
-          <TenorEmbed key={url} url={url} />
-        ))}
+        {tenorUrls.map((url) => {
+          const existingGif = findGifByUrl(url);
+          return (
+            <TenorEmbed
+              key={url}
+              url={url}
+              onFavorite={(gif) => favoriteGifFromUrl(gif.url, gif.label, gif.source, gif.tags)}
+              favorited={Boolean(existingGif && gifFavorites.includes(existingGif.id))}
+            />
+          );
+        })}
         {tweetUrls.map((url) => (
           <TweetEmbed key={url} url={url} onOpenImage={(url, alt) => setLightboxImage({ url, alt })} />
         ))}
+        {iframeEmbeds.map((embed, index) => {
+          const shellStyle: React.CSSProperties & { ["--iframe-embed-aspect-ratio"]?: string } = {};
+          if (embed.width && embed.height) {
+            shellStyle["--iframe-embed-aspect-ratio"] = `${embed.width} / ${embed.height}`;
+          }
+          if (embed.width) {
+            shellStyle.maxWidth = `${embed.width}px`;
+          }
+
+          return (
+            <div className="iframeEmbedShell" key={`${embed.src}-${index}`} style={shellStyle}>
+              <iframe
+                className="iframeEmbed"
+                src={embed.src}
+                title={embed.title}
+                loading="lazy"
+                referrerPolicy="strict-origin-when-cross-origin"
+                allowFullScreen={embed.allowFullscreen}
+              />
+            </div>
+          );
+        })}
         {message.attachment &&
-          (isImageMimeType(message.attachment.mimeType) ? (
-            <a
-              className="imageEmbed attachmentImage"
-              href={message.attachment.objectUrl}
-              download={message.attachment.fileName}
-              onClick={(event) => {
-                if (!message.attachment?.objectUrl) event.preventDefault();
-                event.preventDefault();
-                if (message.attachment?.objectUrl) {
-                  setLightboxImage({ url: message.attachment.objectUrl, alt: message.attachment.fileName });
-                }
-              }}
-            >
-              <img src={message.attachment.objectUrl} alt={message.attachment.fileName} />
-            </a>
-          ) : isVideoMimeType(message.attachment.mimeType) ? (
-            renderVideoEmbed({
-              baseUrl: mediaBaseUrl,
-              key: message.attachment.fileName,
-              href: message.attachment.objectUrl!,
-              url: message.attachment.objectUrl!,
-              className: "videoEmbed attachmentVideo",
-              sourceType: message.attachment.mimeType,
-              download: message.attachment.fileName,
-              onClick: (event) => {
-                if (!message.attachment?.objectUrl) event.preventDefault();
-              },
-            })
-          ) : isAudioMimeType(message.attachment.mimeType) ? (
-            <a
-              className="audioEmbed attachmentAudio"
-              href={message.attachment.objectUrl}
-              download={message.attachment.fileName}
-              onClick={(event) => {
-                if (!message.attachment?.objectUrl) event.preventDefault();
-              }}
-            >
-              <audio controls preload="metadata">
-                <source src={message.attachment.objectUrl} />
-              </audio>
-            </a>
-          ) : (
-            <a
-              className="attachmentCard"
-              href={message.attachment.objectUrl}
-              download={message.attachment.fileName}
-              onClick={(event) => {
-                if (!message.attachment?.objectUrl) event.preventDefault();
-              }}
-            >
-              <Paperclip size={17} />
-              <span>
-                <strong>{message.attachment.fileName}</strong>
-                <small>{formatBytes(message.attachment.size)}</small>
-              </span>
-            </a>
-          ))}
+          (() => {
+            const attachment = message.attachment;
+            if (isImageMimeType(attachment.mimeType)) {
+              if (attachment.mimeType === "image/gif") {
+                const attachmentGifUrl = attachment.dataUrl || attachment.objectUrl || "";
+                const existingGif = attachmentGifUrl ? findGifByUrl(attachmentGifUrl) : null;
+                const favorited = Boolean(existingGif && gifFavorites.includes(existingGif.id));
+                return (
+                  <div className="gifMessageCard" key={attachment.fileName}>
+                    <a
+                      className="imageEmbed attachmentImage tenorEmbed"
+                      href={attachment.objectUrl}
+                      download={attachment.fileName}
+                      onClick={(event) => {
+                        if (!attachment.objectUrl) event.preventDefault();
+                        event.preventDefault();
+                        if (attachment.objectUrl) {
+                          setLightboxImage({ url: attachment.objectUrl, alt: attachment.fileName });
+                        }
+                      }}
+                    >
+                      <img src={attachment.objectUrl} alt={attachment.fileName} />
+                    </a>
+                    <button
+                      type="button"
+                      className={`gifFavorite messageGifFavorite ${favorited ? "active" : ""}`}
+                      aria-label={favorited ? `Remove ${attachment.fileName} from favorites` : `Add ${attachment.fileName} to favorites`}
+                      tabIndex={-1}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        if (attachmentGifUrl) {
+                          favoriteGifFromUrl(attachmentGifUrl, attachment.fileName, "Attachment");
+                        }
+                      }}
+                    >
+                      <Star size={24} fill={favorited ? "currentColor" : "none"} />
+                    </button>
+                  </div>
+                );
+              }
+
+              return (
+                <a
+                  className="imageEmbed attachmentImage"
+                  href={attachment.objectUrl}
+                  download={attachment.fileName}
+                  onClick={(event) => {
+                    if (!attachment.objectUrl) event.preventDefault();
+                    event.preventDefault();
+                    if (attachment.objectUrl) {
+                      setLightboxImage({ url: attachment.objectUrl, alt: attachment.fileName });
+                    }
+                  }}
+                >
+                  <img src={attachment.objectUrl} alt={attachment.fileName} />
+                </a>
+              );
+            }
+
+            if (isVideoMimeType(attachment.mimeType)) {
+              return renderVideoEmbed({
+                baseUrl: mediaBaseUrl,
+                key: attachment.fileName,
+                href: attachment.objectUrl!,
+                url: attachment.objectUrl!,
+                className: "videoEmbed attachmentVideo",
+                sourceType: attachment.mimeType,
+                download: attachment.fileName,
+                onClick: (event) => {
+                  if (!attachment.objectUrl) event.preventDefault();
+                },
+              });
+            }
+
+            if (isAudioMimeType(attachment.mimeType)) {
+              return (
+                <a
+                  className="audioEmbed attachmentAudio"
+                  href={attachment.objectUrl}
+                  download={attachment.fileName}
+                  onClick={(event) => {
+                    if (!attachment.objectUrl) event.preventDefault();
+                  }}
+                >
+                  <audio controls preload="metadata">
+                    <source src={attachment.objectUrl} />
+                  </audio>
+                </a>
+              );
+            }
+
+            return (
+              <a
+                className="attachmentCard"
+                href={attachment.objectUrl}
+                download={attachment.fileName}
+                onClick={(event) => {
+                  if (!attachment.objectUrl) event.preventDefault();
+                }}
+              >
+                <Paperclip size={17} />
+                <span>
+                  <strong>{attachment.fileName}</strong>
+                  <small>{formatBytes(attachment.size)}</small>
+                </span>
+              </a>
+            );
+          })()}
         {hasAnyReactions(message.reactions) && (
           <div className="reactionBar" aria-label="Message reactions">
             {Object.entries(message.reactions ?? {}).map(([emoji, authors]) => (
@@ -6111,7 +7055,7 @@ function App() {
           )}
           {pendingGif && pendingGifChannel === channelId && pendingGifPaneIndex === paneIndex && (
             <div className="gifComposerPreview" role="group" aria-label="Selected GIF preview">
-              <img src={pendingGif.url} alt={pendingGif.label} />
+              {renderGifPickerMedia(pendingGif)}
               <div className="gifComposerPreviewMeta">
                 <strong>{pendingGif.label}</strong>
                 <span>{pendingGif.source}</span>
@@ -6185,7 +7129,7 @@ function App() {
                           }}
                           aria-label={`Insert ${gif.label} GIF`}
                         >
-                          <img src={gif.url} alt={gif.label} loading="lazy" />
+                          {renderGifPickerMedia(gif)}
                           <button
                             type="button"
                             className={`gifFavorite ${gif.favorite ? "active" : ""}`}
@@ -6593,6 +7537,48 @@ function App() {
     setGifFavorites((current) => (current.includes(gifId) ? current.filter((item) => item !== gifId) : [...current, gifId]));
   }
 
+  function findGifByUrl(url: string) {
+    const target = canonicalGifUrl(url).toLowerCase();
+    return allGifEntries.find((gif) => canonicalGifUrl(gif.url).toLowerCase() === target) ?? null;
+  }
+
+  function upsertCustomGif(url: string, label: string, source: string, tags: string[] = []) {
+    const canonicalUrl = canonicalGifUrl(url);
+    const id = `custom:${encodeURIComponent(canonicalUrl)}`;
+    setGifLibrary((current) => {
+      if (current.some((gif) => gif.id === id)) return current;
+      return [
+        ...current,
+        {
+          id,
+          label: label.trim() || "Shared GIF",
+          source: source.trim() || "Shared",
+          url: canonicalUrl,
+          tags: Array.from(new Set(tags.map((tag) => tag.trim()).filter(Boolean))),
+        },
+      ];
+    });
+    return id;
+  }
+
+  function favoriteGifFromUrl(url: string, label: string, source: string, tags: string[] = []) {
+    const existing = findGifByUrl(url);
+    if (existing && tags.length > 0 && existing.id.startsWith("custom:")) {
+      setGifLibrary((current) =>
+        current.map((gif) =>
+          gif.id === existing.id
+            ? {
+                ...gif,
+                tags: Array.from(new Set([...(gif.tags ?? []), ...tags].map((tag) => tag.trim()).filter(Boolean))),
+              }
+            : gif,
+        ),
+      );
+    }
+    const gifId = existing?.id ?? upsertCustomGif(url, label, source, tags);
+    toggleGifFavorite(gifId);
+  }
+
   async function exportWorkspaceBackup() {
     const backup = createWorkspaceBackup(collectWorkspaceBackupSettings(), messages);
     const blob = new Blob([backup], { type: "application/json" });
@@ -6671,10 +7657,6 @@ function App() {
             placeholder="xmpp:room@conference.example.com?join"
           />
         </label>
-        <label>
-          Nick
-          <input value={xmppNick} onChange={(event) => setXmppNick(event.target.value)} placeholder={name || DEFAULT_NAME} />
-        </label>
         <div className="signalStatus">
           Encrypted room traffic is sent through the XMPP server instead of browser-to-browser transport.
         </div>
@@ -6706,7 +7688,6 @@ function App() {
               setXmppSpaceServiceJid("");
               setXmppSpaceNode("");
               setXmppInviteUri("");
-              setXmppNick("");
             }}
           >
             Clear
@@ -6908,6 +7889,12 @@ function App() {
                   <div className="paneAudioMeterFill" style={{ width: `${callActive ? localAudioLevel : 0}%` }} />
                 </div>
               </div>
+              <div className="paneAudioMeter">
+                <span>Remote</span>
+                <div className="paneAudioMeterBar">
+                  <div className="paneAudioMeterFill" style={{ width: `${remoteMediaActive ? peerAudioLevel : 0}%` }} />
+                </div>
+              </div>
             </div>
             <div className="mediaActions">
               <button
@@ -6950,6 +7937,17 @@ function App() {
               >
                 {cameraActive ? <VideoOff size={13} /> : <Video size={13} />}
               </button>
+              {remoteAudioBlocked && (
+                <button
+                  type="button"
+                  className="secondaryButton compact"
+                  onClick={() => void resumeRemoteAudio()}
+                  aria-label="Resume remote audio"
+                  title="Resume remote audio"
+                >
+                  Resume audio
+                </button>
+              )}
             </div>
             <audio ref={remoteAudioRef} autoPlay playsInline />
           </section>
@@ -7270,7 +8268,7 @@ function App() {
           )}
           {pendingGif && pendingGifChannel === activeChannel && pendingGifPaneIndex === null && (
             <div className="gifComposerPreview" role="group" aria-label="Selected GIF preview">
-              <img src={pendingGif.url} alt={pendingGif.label} />
+              {renderGifPickerMedia(pendingGif)}
               <div className="gifComposerPreviewMeta">
                 <strong>{pendingGif.label}</strong>
                 <span>{pendingGif.source}</span>
@@ -7384,23 +8382,23 @@ function App() {
                       gifColumns.map((column, columnIndex) => (
                         <div className="gifColumn" key={columnIndex}>
                           {column.map((gif) => (
-                            <div
-                              key={gif.id}
-                              className="gifCard"
-                              role="button"
-                              tabIndex={0}
+                        <div
+                          key={gif.id}
+                          className="gifCard"
+                          role="button"
+                          tabIndex={0}
                               onClick={() => insertGif(gif)}
                               onKeyDown={(event) => {
                                 if (event.key !== "Enter" && event.key !== " ") return;
                                 event.preventDefault();
                                 insertGif(gif);
-                              }}
-                              aria-label={`Insert ${gif.label} GIF`}
-                            >
-                              <img src={gif.url} alt={gif.label} loading="lazy" />
-                              <button
-                                type="button"
-                                className={`gifFavorite ${gif.favorite ? "active" : ""}`}
+                          }}
+                          aria-label={`Insert ${gif.label} GIF`}
+                        >
+                          {renderGifPickerMedia(gif)}
+                          <button
+                            type="button"
+                            className={`gifFavorite ${gif.favorite ? "active" : ""}`}
                                 aria-label={
                                   gif.favorite ? `Remove ${gif.label} from favorites` : `Add ${gif.label} to favorites`
                                 }
@@ -8068,8 +9066,8 @@ function App() {
             {modal === "xmpp-account" && (
               <div className="modalBody">
                 <p className="modalCopy">
-                  Enter the XMPP account details you want to use on <strong>doge-cube.local</strong>. This app will
-                  build the JID from the username and domain, then connect with that account.
+                  Enter the XMPP account details you want to use on <strong>{xmppAccountDomain || "chaff.site"}</strong>.
+                  The WebSocket URL must already be filled in above; this modal only creates the account JID and password.
                 </p>
                 <label>
                   Username
@@ -8264,6 +9262,46 @@ function App() {
                       Clear profile art
                     </button>
                   </div>
+                </details>
+                <details className="collapsibleSection" open>
+                  <summary>Audio</summary>
+                  <label>
+                    Input source
+                    <select value={audioInputDeviceId} onChange={(event) => setAudioInputDeviceId(event.target.value)}>
+                      <option value="">System default microphone</option>
+                      {audioInputDevices.map((device) => (
+                        <option key={device.deviceId} value={device.deviceId}>
+                          {device.label || `Microphone ${device.deviceId.slice(0, 4)}`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Output channel
+                    <select
+                      value={audioOutputDeviceId}
+                      onChange={(event) => setAudioOutputDeviceId(event.target.value)}
+                      disabled={!canSelectAudioOutput}
+                    >
+                      <option value="">System default speakers</option>
+                      {audioOutputDevices.map((device) => (
+                        <option key={device.deviceId} value={device.deviceId}>
+                          {device.label || `Speaker ${device.deviceId.slice(0, 4)}`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="audioActions">
+                    {canSelectAudioOutput && (
+                      <button type="button" onClick={pickAudioOutputDevice}>
+                        Choose playback device
+                      </button>
+                    )}
+                    <button type="button" onClick={() => void playPingSound()}>
+                      Play ping sound
+                    </button>
+                  </div>
+                  {!canSelectAudioOutput && <p className="modalCopy">This browser does not support choosing a playback device.</p>}
                 </details>
                 <p className="modalCopy">XMPP connection settings are configured in the Federation tab.</p>
                 <input

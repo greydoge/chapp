@@ -15,3 +15,21 @@ export function buildTweetMediaProxyUrl(baseUrl: string, options: TweetMediaProx
   }
   return url.toString();
 }
+
+export function extractTweetMediaSourceUrl(url: string) {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = new URL(trimmed, "http://localhost");
+    if (parsed.pathname !== "/tweet-media") return null;
+    const sourceUrl = parsed.searchParams.get("src") ?? parsed.searchParams.get("fallback");
+    return sourceUrl?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeTweetMediaUrl(url: string) {
+  return extractTweetMediaSourceUrl(url) ?? url.trim();
+}
